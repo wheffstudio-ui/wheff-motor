@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 
+import traducao
 import wheff
 
 ORG = os.environ.get("WHEFF_ORG", "wheff")
@@ -101,9 +102,26 @@ def executar(job):
             snapshot={"modelo": t["modelo"]})
         wheff.ligar(ORG, transcript, video, "derived_from")
         print(f"  criado {transcript['artifact_key']} "
-              f"({len(t['trechos'])} trechos, {t['duracao']}s)")
+              f"({t['idioma']}, {len(t['trechos'])} trechos, {t['duracao']}s)")
 
-        # Próximo elo da corrente. A IA lê a transcrição e produz o DNA.
+        # Tradução — peça separada, com genealogia própria. Fica claro que é
+        # texto de máquina, e qual máquina, e a partir de qual transcrição.
+        traduzidos, via = traducao.traduzir_trechos(
+            t["trechos"], t["idioma"], caminho_audio=midia, modelo_whisper=MODELO)
+        if traduzidos:
+            trad = wheff.criar_artefato(
+                ORG, "translation", "DERIVED", "translation:v1", escopo="SHARED",
+                criado_por=f"worker:argos/{WORKER}",
+                dados={"idioma_origem": t["idioma"], "idioma_destino": "pt",
+                       "texto": " ".join(x["texto"] for x in traduzidos),
+                       "trechos": traduzidos, "via": via},
+                snapshot={"tradutor": via})
+            wheff.ligar(ORG, trad, transcript, "derived_from")
+            print(f"  criado {trad['artifact_key']} ({via})")
+        else:
+            print(f"  sem tradução: {via}")
+
+        # Próximo elo. A IA analisa o texto ORIGINAL — nunca a tradução.
         wheff.enfileirar(ORG, "dna.analyze",
                          {"video_artifact_id": video["id"],
                           "transcript_artifact_id": transcript["id"]},
