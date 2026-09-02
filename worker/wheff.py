@@ -5,6 +5,8 @@ Este arquivo NÃO contém segredo nenhum. As chaves chegam por variável de
 ambiente, vindas dos GitHub Secrets. Nunca escreva chave aqui dentro.
 """
 import os
+from datetime import datetime, timezone
+
 import requests
 
 URL = os.environ["SUPABASE_URL"].rstrip("/")
@@ -33,6 +35,9 @@ def pegar_job(org, worker, tipos, minutos=30):
         json={"p_org": org, "p_worker": worker,
               "p_types": tipos, "p_lease_minutes": minutos},
     ), "claim_job")
+    # Fila vazia responde 204 ou corpo vazio — ler JSON aqui estourava.
+    if r.status_code == 204 or not (r.text or "").strip():
+        return None
     return r.json() or None
 
 
@@ -127,7 +132,8 @@ def enfileirar(org, tipo, payload, idempotency_key, prioridade=100):
 def terminar_job(org, job_id, erro=None):
     """Fecha a tarefa. Sem erro = pronto; com erro = volta para a fila."""
     if erro is None:
-        corpo = {"status": "COMPLETED", "completed_at": "now()",
+        corpo = {"status": "COMPLETED",
+                 "completed_at": datetime.now(timezone.utc).isoformat(),
                  "lease_expires_at": None}
         evento = "job.completed"
     else:
