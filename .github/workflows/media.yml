@@ -1,0 +1,48 @@
+name: Media Engine
+
+# Quando roda:
+#  - a cada 10 min, pegando o que estiver na fila
+#  - ou quando você clica em "Run workflow" aqui no GitHub
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+  repository_dispatch:
+    types: [media-ingest]
+
+concurrency:
+  group: media-engine
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Instalar ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
+      - name: Instalar dependencias
+        run: pip install -q -r requirements.txt
+
+      # Guarda o modelo do Whisper entre execucoes (evita baixar 140MB toda vez)
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: whisper-${{ env.WHISPER_MODEL }}
+
+      - name: Processar fila
+        working-directory: worker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          WHEFF_ORG: wheff
+          WHISPER_MODEL: base
+        run: python media_ingest.py
