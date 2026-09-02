@@ -1,0 +1,64 @@
+name: Backup do banco
+
+# Todo dia as 5h da manha (horario de Brasilia), ou quando voce mandar.
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Instalar dependencias
+        run: pip install -q requests
+
+      - name: Exportar tabelas
+        working-directory: worker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          BACKUP_DIR: ${{ github.workspace }}/backup
+        run: python backup.py
+
+      # Copia 1: fica 90 dias aqui, sem configurar nada
+      - name: Guardar como artefato
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheff-backup-${{ github.run_number }}
+          path: backup/
+          retention-days: 90
+
+      # Copia 2: permanente, em repositorio PRIVADO.
+      # So roda se o segredo existir — sem ele, o passo e pulado sem erro.
+      - name: Enviar para o repositorio privado
+        if: ${{ secrets.BACKUP_REPO_TOKEN != '' && secrets.BACKUP_REPO != '' }}
+        env:
+          TOKEN: ${{ secrets.BACKUP_REPO_TOKEN }}
+          REPO: ${{ secrets.BACKUP_REPO }}
+        run: |
+          set -e
+          git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${REPO}.git" destino
+          DIA=$(date -u +%Y-%m-%d)
+          mkdir -p "destino/supabase/${DIA}"
+          cp backup/*.json "destino/supabase/${DIA}/"
+          mkdir -p destino/supabase/ultimo
+          cp backup/*.json destino/supabase/ultimo/
+          cd destino
+          git config user.name  "wheff-motor"
+          git config user.email "motor@wheff.local"
+          git add -A
+          git diff --staged --quiet || git commit -m "Backup do Supabase ${DIA}"
+          git push
