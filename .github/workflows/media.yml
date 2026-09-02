@@ -38,7 +38,7 @@ jobs:
           path: |
             ~/.cache/huggingface
             ~/.local/share/argos-translate
-          key: modelos-whisper-base-argos-v1
+          key: modelos-whisper-small-argos-v1
 
       - name: Processar fila
         working-directory: worker
@@ -46,5 +46,5 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           WHEFF_ORG: wheff
-          WHISPER_MODEL: base
+          WHISPER_MODEL: small
         run: python media_ingest.py
