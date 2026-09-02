@@ -1,4 +1,4 @@
-name: Media Engine
+name: Motor Wheff
 
 # Quando roda:
 #  - a cada 10 min, pegando o que estiver na fila
@@ -40,7 +40,7 @@ jobs:
             ~/.local/share/argos-translate
           key: modelos-whisper-small-argos-v1
 
-      - name: Processar fila
+      - name: 1. Baixar e transcrever
         working-directory: worker
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -48,3 +48,14 @@ jobs:
           WHEFF_ORG: wheff
           WHISPER_MODEL: small
         run: python media_ingest.py
+
+      # Roda mesmo se o passo anterior nao achou nada na fila
+      - name: 2. Analisar o conteudo
+        if: always()
+        working-directory: worker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          WHEFF_ORG: wheff
+        run: python dna_analyze.py

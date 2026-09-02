@@ -46,6 +46,15 @@ def proximo_codigo(org, tipo):
     return r.json()
 
 
+def buscar_artefato(artifact_id):
+    """Lê uma peça pelo id."""
+    r = _check(requests.get(
+        f"{URL}/rest/v1/artifacts?id=eq.{artifact_id}&select=*",
+        headers=H, timeout=30), "buscar artefato")
+    linhas = r.json()
+    return linhas[0] if linhas else None
+
+
 def criar_artefato(org, tipo, nivel, schema, dados, criado_por,
                    escopo="ORG", content_hash=None, snapshot=None,
                    status="APPROVED", brand_id=None):
