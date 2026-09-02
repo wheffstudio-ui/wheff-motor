@@ -65,6 +65,29 @@ def buscar_artefato(artifact_id):
     return linhas[0] if linhas else None
 
 
+def derivados_de(artifact_id, tipo):
+    """
+    Peças de um tipo que já nasceram desta origem.
+
+    Serve para uma tarefa poder ser repetida sem duplicar trabalho: se a
+    execução anterior morreu no meio, o que já foi feito é reaproveitado
+    em vez de recriado.
+    """
+    r = _check(requests.get(
+        f"{URL}/rest/v1/artifact_links"
+        f"?to_artifact_id=eq.{artifact_id}&relation=eq.derived_from"
+        f"&select=from_artifact_id",
+        headers=H, timeout=30), "buscar derivados")
+    ids = [x["from_artifact_id"] for x in r.json()]
+    if not ids:
+        return []
+    lista = ",".join(ids)
+    r = _check(requests.get(
+        f"{URL}/rest/v1/artifacts?id=in.({lista})&type=eq.{tipo}&select=*",
+        headers=H, timeout=30), "buscar artefatos derivados")
+    return r.json()
+
+
 def criar_artefato(org, tipo, nivel, schema, dados, criado_por,
                    escopo="ORG", content_hash=None, snapshot=None,
                    status="APPROVED", brand_id=None):

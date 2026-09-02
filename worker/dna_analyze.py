@@ -10,6 +10,9 @@ A IA lê o texto ORIGINAL, nunca a tradução.
 import json
 import os
 import sys
+import time
+
+import re
 
 import requests
 
@@ -66,21 +69,39 @@ def escolher_modelo():
     return _MODELO
 
 
-def groq(sistema, usuario, max_tokens=4000):
+def groq(sistema, usuario, max_tokens=4000, tentativas=4):
+    """
+    Chama o Groq respeitando o teto de tokens por minuto do plano gratuito.
+
+    O 429 não é erro de verdade: é o Groq dizendo "espera N segundos". Ele
+    informa quanto esperar, então esperamos em vez de falhar a tarefa toda.
+    """
     MODELO = escolher_modelo()
-    r = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers={"Authorization": f"Bearer {GROQ_KEY}",
-                 "Content-Type": "application/json"},
-        timeout=180,
-        json={"model": MODELO, "temperature": 0.3, "max_tokens": max_tokens,
-              "response_format": {"type": "json_object"},
-              "messages": [{"role": "system", "content": sistema},
-                           {"role": "user", "content": usuario}]},
-    )
-    if r.status_code >= 300:
-        raise RuntimeError(f"Groq {r.status_code}: {r.text[:400]}")
-    return json.loads(r.json()["choices"][0]["message"]["content"])
+    for tentativa in range(1, tentativas + 1):
+        r = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_KEY}",
+                     "Content-Type": "application/json"},
+            timeout=180,
+            json={"model": MODELO, "temperature": 0.3, "max_tokens": max_tokens,
+                  "response_format": {"type": "json_object"},
+                  "messages": [{"role": "system", "content": sistema},
+                               {"role": "user", "content": usuario}]},
+        )
+        if r.status_code == 429 and tentativa < tentativas:
+            espera = float(r.headers.get("retry-after") or 0)
+            if not espera:
+                m = re.search(r"try again in ([0-9.]+)s", r.text)
+                espera = float(m.group(1)) if m else 20.0
+            espera = min(espera + 2, 70)
+            print(f"    teto de tokens atingido, esperando {espera:.0f}s "
+                  f"(tentativa {tentativa}/{tentativas})")
+            time.sleep(espera)
+            continue
+        if r.status_code >= 300:
+            raise RuntimeError(f"Groq {r.status_code}: {r.text[:400]}")
+        return json.loads(r.json()["choices"][0]["message"]["content"])
+    raise RuntimeError("Groq: teto de tokens não liberou depois de várias esperas")
 
 
 # O LIMITE ABSOLUTO no fim do prompt é o que impede o modelo de inventar
@@ -138,30 +159,44 @@ def executar(job):
     texto = "\n".join(f"[{t['id']}] {t['inicio']}s–{t['fim']}s: {t['texto']}"
                       for t in trechos)
 
+    # Se uma execução anterior morreu no meio, aproveita o que já ficou
+    # pronto. Sem isso, cada tentativa criava um DNA duplicado.
+    ja_tem = wheff.derivados_de(tr["id"], "content_dna")
+    if ja_tem:
+        art = ja_tem[0]
+        print(f"  {art['artifact_key']} já existia — reaproveitando")
+    else:
+        art = None
+
     # 1. DNA — sempre sobre o texto original
-    dna = groq(SISTEMA_DNA,
+    dna = None if art else groq(SISTEMA_DNA,
                f"Idioma original: {tr['data'].get('idioma')}\n"
                f"Duração: {tr['data'].get('duracao')}s\n\n{texto}")
-    if not isinstance(dna.get("confidence"), (int, float)):
-        dna["confidence"] = 0.5
-    dna["idioma_original"] = tr["data"].get("idioma")
-    dna["limitacoes"] = ["Somente áudio analisado. "
-                         "Sem análise visual, de corte ou de texto em tela."]
+    if dna is not None:
+        if not isinstance(dna.get("confidence"), (int, float)):
+            dna["confidence"] = 0.5
+        dna["idioma_original"] = tr["data"].get("idioma")
+        dna["limitacoes"] = ["Somente áudio analisado. "
+                             "Sem análise visual, de corte ou de texto em tela."]
 
-    art = wheff.criar_artefato(
-        ORG, "content_dna", "HYPOTHESIS", "content-dna:v1", escopo="SHARED",
-        status="AWAITING_APPROVAL",          # você decidiu ver tudo antes
-        criado_por=f"agent:{AGENTE}", dados=dna,
-        snapshot={"agente": AGENTE, "modelo": escolher_modelo(),
-                  "prompt": "dna:v1"})
-    wheff.ligar(ORG, art, tr, "derived_from")
-    print(f"  criado {art['artifact_key']} (confiança {dna['confidence']})")
+        art = wheff.criar_artefato(
+            ORG, "content_dna", "HYPOTHESIS", "content-dna:v1", escopo="SHARED",
+            status="AWAITING_APPROVAL",      # você decidiu ver tudo antes
+            criado_por=f"agent:{AGENTE}", dados=dna,
+            snapshot={"agente": AGENTE, "modelo": escolher_modelo(),
+                      "prompt": "dna:v1"})
+        wheff.ligar(ORG, art, tr, "derived_from")
+        print(f"  criado {art['artifact_key']} (confiança {dna['confidence']})")
 
     # 2. Tradução pt-BR — a do argos saiu em português de Portugal
-    if (tr["data"].get("idioma") or "").lower() != "pt":
+    ja_traduzido = [x for x in wheff.derivados_de(tr["id"], "translation")
+                    if (x.get("data") or {}).get("idioma_destino") == "pt-BR"]
+    if ja_traduzido:
+        print(f"  {ja_traduzido[0]['artifact_key']} já existia — pulando")
+    elif (tr["data"].get("idioma") or "").lower() != "pt":
         t = groq(SISTEMA_TRAD, json.dumps(
             {"trechos": [{"id": x["id"], "texto": x["texto"]} for x in trechos]},
-            ensure_ascii=False))
+            ensure_ascii=False), max_tokens=1500)
         por_id = {x["id"]: x["texto"] for x in (t.get("trechos") or [])}
         traduzidos = [{**x, "texto": por_id.get(x["id"], x["texto"])} for x in trechos]
 
