@@ -35,10 +35,15 @@ def pegar_job(org, worker, tipos, minutos=30):
         json={"p_org": org, "p_worker": worker,
               "p_types": tipos, "p_lease_minutes": minutos},
     ), "claim_job")
-    # Fila vazia responde 204 ou corpo vazio — ler JSON aqui estourava.
+    # Fila vazia: o Postgres devolve uma LINHA com todos os campos nulos,
+    # não um "nada". Em Python isso é um dict verdadeiro, então checar
+    # `if not job` no chamador não bastava — tem que olhar o id.
     if r.status_code == 204 or not (r.text or "").strip():
         return None
-    return r.json() or None
+    job = r.json()
+    if not job or not job.get("id"):
+        return None
+    return job
 
 
 def proximo_codigo(org, tipo):

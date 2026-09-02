@@ -18,11 +18,56 @@ import wheff
 ORG = os.environ.get("WHEFF_ORG", "wheff")
 WORKER = f"gh-actions/{os.environ.get('GITHUB_RUN_ID', 'local')}"
 GROQ_KEY = os.environ["GROQ_API_KEY"]
-MODELO = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 AGENTE = "dna.analyze:v1"
+
+# O Groq muda o catálogo de modelos sem aviso — foi assim que a primeira
+# execução quebrou. Em vez de fixar um nome, perguntamos quais existem hoje
+# e pegamos o melhor da lista. O modelo realmente usado fica gravado no
+# context_snapshot do artefato, que é justamente para isso que ele serve.
+PREFERENCIA = [
+    "llama-3.3-70b-versatile",
+    "openai/gpt-oss-120b",
+    "moonshotai/kimi-k2-instruct",
+    "qwen/qwen3-32b",
+    "llama-3.1-8b-instant",
+]
+_MODELO = None
+
+
+def escolher_modelo():
+    global _MODELO
+    if _MODELO:
+        return _MODELO
+
+    forcado = os.environ.get("GROQ_MODEL")
+    if forcado:
+        _MODELO = forcado
+        return _MODELO
+
+    r = requests.get("https://api.groq.com/openai/v1/models",
+                     headers={"Authorization": f"Bearer {GROQ_KEY}"}, timeout=30)
+    if r.status_code >= 300:
+        raise RuntimeError(f"Groq /models {r.status_code}: {r.text[:300]}")
+    disponiveis = {m["id"] for m in r.json().get("data", [])}
+
+    for m in PREFERENCIA:
+        if m in disponiveis:
+            _MODELO = m
+            print(f"  modelo: {m}")
+            return m
+
+    # Nenhum da lista: pega qualquer um que não seja de áudio ou moderação
+    resto = sorted(x for x in disponiveis
+                   if not any(p in x for p in ("whisper", "tts", "guard", "vision")))
+    if not resto:
+        raise RuntimeError(f"nenhum modelo de texto disponível: {sorted(disponiveis)}")
+    _MODELO = resto[0]
+    print(f"  modelo (fallback): {_MODELO}")
+    return _MODELO
 
 
 def groq(sistema, usuario, max_tokens=4000):
+    MODELO = escolher_modelo()
     r = requests.post(
         "https://api.groq.com/openai/v1/chat/completions",
         headers={"Authorization": f"Bearer {GROQ_KEY}",
@@ -107,7 +152,8 @@ def executar(job):
         ORG, "content_dna", "HYPOTHESIS", "content-dna:v1", escopo="SHARED",
         status="AWAITING_APPROVAL",          # você decidiu ver tudo antes
         criado_por=f"agent:{AGENTE}", dados=dna,
-        snapshot={"agente": AGENTE, "modelo": MODELO, "prompt": "dna:v1"})
+        snapshot={"agente": AGENTE, "modelo": escolher_modelo(),
+                  "prompt": "dna:v1"})
     wheff.ligar(ORG, art, tr, "derived_from")
     print(f"  criado {art['artifact_key']} (confiança {dna['confidence']})")
 
@@ -125,8 +171,10 @@ def executar(job):
             dados={"idioma_origem": tr["data"].get("idioma"),
                    "idioma_destino": "pt-BR",
                    "texto": " ".join(x["texto"] for x in traduzidos),
-                   "trechos": traduzidos, "via": f"groq:{MODELO}"},
-            snapshot={"modelo": MODELO, "prompt": "traducao-ptbr:v1"})
+                   "trechos": traduzidos,
+                   "via": f"groq:{escolher_modelo()}"},
+            snapshot={"modelo": escolher_modelo(),
+                      "prompt": "traducao-ptbr:v1"})
         wheff.ligar(ORG, trad, tr, "derived_from")
         print(f"  criado {trad['artifact_key']} (pt-BR)")
 
