@@ -65,6 +65,21 @@ def buscar_artefato(artifact_id):
     return linhas[0] if linhas else None
 
 
+def buscar_por_tipo(org, tipo, status=None, apenas_atual=True):
+    """
+    Peças de um tipo. Serve para o contrato de dependência: o worker
+    pergunta ao banco se o que ele exige existe APROVADO, em vez de
+    supor que existe porque alguém disse que criou.
+    """
+    q = f"{URL}/rest/v1/artifacts?org_id=eq.{org}&type=eq.{tipo}&select=*"
+    if apenas_atual:
+        q += "&is_current=is.true"
+    if status:
+        q += f"&status=eq.{status}"
+    r = _check(requests.get(q, headers=H, timeout=30), "buscar por tipo")
+    return r.json()
+
+
 def derivados_de(artifact_id, tipo):
     """
     Peças de um tipo que já nasceram desta origem.

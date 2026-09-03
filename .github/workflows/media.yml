@@ -50,7 +50,17 @@ jobs:
         run: python media_ingest.py
 
       # Roda mesmo se o passo anterior nao achou nada na fila
-      - name: 2. Analisar o conteudo
+      - name: 2. Estrategia de comunidade
+        if: always()
+        working-directory: worker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          WHEFF_ORG: wheff
+        run: python community.py
+
+      - name: 3. Analisar o conteudo
         if: always()
         working-directory: worker
         env:
