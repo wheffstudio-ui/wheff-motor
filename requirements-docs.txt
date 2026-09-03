@@ -1,0 +1,5 @@
+# Leitura de documento — separado do requirements.txt principal de proposito.
+# O Docling puxa torch e modelos de layout (~2 GB). Misturar isso no motor de
+# midia faria o loop de 10 minutos gastar varios minutos so instalando.
+docling>=2.0.0
+requests>=2.31.0

@@ -1,0 +1,54 @@
+name: Leitor de Documentos
+
+# Separado do motor de midia de proposito: o Docling instala torch e baixa
+# modelos de layout. Rodar isso a cada 10 minutos gastaria a maior parte do
+# tempo instalando dependencia para, quase sempre, nao achar nada na fila.
+#
+# Aqui roda de hora em hora, ou na hora em que voce clicar em "Run workflow"
+# depois de enviar um arquivo pela plataforma.
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+  repository_dispatch:
+    types: [doc-ingest]
+
+concurrency:
+  group: leitor-documentos
+  cancel-in-progress: false
+
+jobs:
+  ler:
+    runs-on: ubuntu-latest
+    # PDF longo com muitas tabelas leva minutos. 45 da folga sem deixar um
+    # travamento consumir hora de runner a toa.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-docs.txt
+
+      # Os modelos de layout e de tabela do Docling sao baixados na primeira
+      # execucao. Sem cache, seriam baixados de novo toda vez.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/docling
+            ~/.cache/huggingface
+          key: docling-modelos-v1
+
+      - name: Instalar Docling
+        run: pip install -q -r requirements-docs.txt
+
+      - name: Ler documento da fila
+        working-directory: worker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          WHEFF_ORG: wheff
+          WHEFF_BUCKET: documentos
+        run: python docs_ingest.py
