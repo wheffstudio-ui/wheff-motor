@@ -60,7 +60,22 @@ jobs:
           WHEFF_ORG: wheff
         run: python community.py
 
-      - name: 3. Analisar o conteudo
+      # Coleta de comentario. Nao usa Groq: nao gasta token nenhum, so busca
+      # e guarda. Marcar o que e dor ou objecao continua sendo trabalho de
+      # pessoa, na tela de Fontes.
+      - name: 3. Coletar pesquisa (YouTube / Reddit)
+        if: always()
+        working-directory: worker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
+          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
+          REDDIT_USER_AGENT: wheff-pesquisa/1.0
+          WHEFF_ORG: wheff
+        run: python research_collect.py
+
+      - name: 4. Analisar o conteudo
         if: always()
         working-directory: worker
         env:
