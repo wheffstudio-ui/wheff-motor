@@ -62,7 +62,7 @@ def escolher_modelo():
     return _MODELO
 
 
-def groq(sistema, usuario, max_tokens=6000, tentativas=4):
+def groq(sistema, usuario, max_tokens=4000, tentativas=4):
     """Mesma disciplina do dna_analyze: 429 é espera, não falha."""
     modelo = escolher_modelo()
     for t in range(1, tentativas + 1):
@@ -76,13 +76,26 @@ def groq(sistema, usuario, max_tokens=6000, tentativas=4):
                   "messages": [{"role": "system", "content": sistema},
                                {"role": "user", "content": usuario}]},
         )
-        if r.status_code == 429 and t < tentativas:
+        if r.status_code == 429:
+            # Distingue os dois 429 diferentes, que exigem respostas opostas:
+            # "esperei demais neste minuto" (esperar resolve) e "esta chamada
+            # sozinha e maior que o teto" (esperar nunca resolve).
+            det = re.search(r"Limit (\d+), Used (\d+), Requested (\d+)", r.text)
+            if det:
+                limite, usado, pedido = (int(x) for x in det.groups())
+                if pedido > limite:
+                    raise RuntimeError(
+                        f"a chamada sozinha pede {pedido} tokens e o teto e {limite}. "
+                        f"Esperar nao resolve: e preciso encurtar o prompt ou o max_tokens.")
+                print(f"    teto do minuto: {usado}/{limite}, pedindo {pedido}")
+            if t >= tentativas:
+                raise RuntimeError(f"Groq 429 apos {tentativas} tentativas: {r.text[:300]}")
             espera = float(r.headers.get("retry-after") or 0)
             if not espera:
                 m = re.search(r"try again in ([0-9.]+)s", r.text)
                 espera = float(m.group(1)) if m else 20.0
             espera = min(espera + 2, 70)
-            print(f"    teto de tokens, esperando {espera:.0f}s ({t}/{tentativas})")
+            print(f"    esperando {espera:.0f}s ({t}/{tentativas})")
             time.sleep(espera)
             continue
         if r.status_code >= 300:
@@ -144,6 +157,17 @@ REGRAS QUE NÃO PODEM SER QUEBRADAS:
 LIMITE: você recebeu apenas os perfis de marca e público. Não tem dado de comportamento real de nenhuma comunidade existente, nem métrica, nem conversa de membro. Tudo que você produzir é HIPÓTESE a ser testada — escreva como tal."""
 
 
+def _corta(itens, n, campo="texto"):
+    """
+    Manda os N primeiros. O teto do Groq gratuito e por minuto e conta
+    entrada + saida: perfil rico demais deixa de caber. Melhor cortar de
+    forma previsivel do que estourar e nao gerar nada.
+    """
+    vals = [(x.get(campo) if isinstance(x, dict) else x) or "" for x in (itens or [])]
+    vals = [v for v in vals if v]
+    return " | ".join(vals[:n]) + (f"  (+{len(vals)-n} nao enviados)" if len(vals) > n else "")
+
+
 def montar_entrada(marca, publico, mercado):
     """
     Contexto por referência, não por cópia: o modelo recebe os campos que
@@ -157,23 +181,23 @@ def montar_entrada(marca, publico, mercado):
         f"Essência: {m.get('essencia')}",
         f"Propósito: {m.get('proposito')}",
         f"INIMIGO COMUM DECLARADO PELA MARCA: {m.get('inimigo_comum')}",
-        f"Crenças: {' | '.join(m.get('crencas') or [])}",
+        f"Crenças: {_corta(m.get('crencas'), 6)}",
         f"Valores: {' | '.join(v.get('nome','') for v in (m.get('valores') or []))}",
         f"Tom de voz: {(m.get('tom_de_voz') or {}).get('descricao')}",
         f"Somos: {', '.join((m.get('tom_de_voz') or {}).get('somos') or [])}",
         f"NÃO somos: {', '.join((m.get('tom_de_voz') or {}).get('nao_somos') or [])}",
         f"PROIBIÇÕES: {' | '.join(m.get('proibicoes') or [])}",
-        f"Não é para: {' | '.join(m.get('nao_e_para') or [])}",
+        f"Não é para: {_corta(m.get('nao_e_para'), 5)}",
         f"Jargões: {' | '.join(m.get('jargoes') or [])}",
         "",
         "═══ PÚBLICO ═══",
         f"Nome: {p.get('nome')}",
         f"Resumo: {p.get('resumo')}",
         f"TENSÃO COMPARTILHADA DECLARADA: {p.get('tensao_compartilhada')}",
-        "Dores: " + " | ".join(d.get("texto", "") for d in (p.get("dores") or [])),
-        "Desejos: " + " | ".join(d.get("texto", "") for d in (p.get("desejos") or [])),
-        "Objeções: " + " | ".join(d.get("texto", "") for d in (p.get("objecoes") or [])),
-        "Crenças dela: " + " | ".join(d.get("texto", "") for d in (p.get("crencas") or [])),
+        "Dores: " + _corta(p.get("dores"), 12),
+        "Desejos: " + _corta(p.get("desejos"), 8),
+        "Objeções: " + _corta(p.get("objecoes"), 7),
+        "Crenças dela: " + _corta(p.get("crencas"), 5),
         f"Expressões que ela usa: {', '.join((p.get('linguagem') or {}).get('expressoes') or [])}",
         f"Termos que a afastam: {', '.join((p.get('linguagem') or {}).get('evitar') or [])}",
         f"Confiança do perfil de público: {p.get('confidence')}",
