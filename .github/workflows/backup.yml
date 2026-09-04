@@ -14,6 +14,13 @@ jobs:
   backup:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Os segredos viram env AQUI, no nivel do job, de proposito: o GitHub nao
+    # aceita o contexto `secrets` dentro do `if` de um passo — a expressao nao
+    # compila e o workflow inteiro e rejeitado antes de qualquer job nascer.
+    # Com env, o `if` passa a ser valido.
+    env:
+      BACKUP_REPO: ${{ secrets.BACKUP_REPO }}
+      BACKUP_REPO_TOKEN: ${{ secrets.BACKUP_REPO_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -44,13 +51,11 @@ jobs:
       # Copia 2: permanente, em repositorio PRIVADO.
       # So roda se o segredo existir — sem ele, o passo e pulado sem erro.
       - name: Enviar para o repositorio privado
-        if: ${{ secrets.BACKUP_REPO_TOKEN != '' && secrets.BACKUP_REPO != '' }}
-        env:
-          TOKEN: ${{ secrets.BACKUP_REPO_TOKEN }}
-          REPO: ${{ secrets.BACKUP_REPO }}
+        if: env.BACKUP_REPO != '' && env.BACKUP_REPO_TOKEN != ''
         run: |
           set -e
-          git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${REPO}.git" destino
+          git clone --depth 1 \
+            "https://x-access-token:${BACKUP_REPO_TOKEN}@github.com/${BACKUP_REPO}.git" destino
           DIA=$(date -u +%Y-%m-%d)
           mkdir -p "destino/supabase/${DIA}"
           cp backup/*.json "destino/supabase/${DIA}/"
