@@ -43,6 +43,16 @@ MAX_SECOES = 500
 MAX_CHARS_ITEM = 6000
 MAX_RESUMO = 2000
 
+# Medido em producao: 785 segundos para 98 paginas = 8 s/pagina. Com teto de
+# 45 minutos por execucao (menos ~150s de instalacao), cabem ~318 paginas no
+# limite. 150 deixa 55% de folga para pagina densa, tabela grande e upload.
+#
+# E por isso que um manual de 2.600 paginas nao passa inteiro: seriam quase 6
+# horas de processamento. Ele e lido em partes, e cada parte vira um artefato
+# proprio — o que alias e o modelo certo, porque 2.600 paginas tambem
+# estourariam o teto de 2.000 trechos de um artefato so.
+MAX_PAGINAS_POR_PARTE = int(os.environ.get("WHEFF_PAGINAS_POR_PARTE", "150"))
+
 
 # ── Storage ────────────────────────────────────────────────────────────────
 # O Storage exige `apikey` alem do Authorization, igual ao resto da API. As
@@ -106,6 +116,30 @@ def subir(caminho: str, conteudo: bytes, tipo="text/markdown") -> str:
 
 
 # ── Conversao ──────────────────────────────────────────────────────────────
+def contar_paginas(caminho_local: Path):
+    """Quantas paginas tem o PDF. None para o que nao e PDF."""
+    if caminho_local.suffix.lower() != ".pdf":
+        return None
+    try:
+        from pypdf import PdfReader
+        return len(PdfReader(str(caminho_local)).pages)
+    except Exception as e:
+        print(f"  aviso: nao consegui contar paginas ({e}) — tratando como arquivo unico")
+        return None
+
+
+def recortar(caminho_local: Path, inicio: int, fim: int, destino: Path) -> Path:
+    """Escreve um PDF novo so com as paginas [inicio, fim), 1-indexado."""
+    from pypdf import PdfReader, PdfWriter
+    leitor = PdfReader(str(caminho_local))
+    escritor = PdfWriter()
+    for i in range(inicio - 1, min(fim - 1, len(leitor.pages))):
+        escritor.add_page(leitor.pages[i])
+    with open(destino, "wb") as f:
+        escritor.write(f)
+    return destino
+
+
 def converter(caminho_local: Path):
     """Devolve (markdown, avisos, n_tabelas, paginas_por_titulo).
 
@@ -250,10 +284,26 @@ def processar(job):
     dados_brutos = baixar(caminho)
     print(f"  baixado: {len(dados_brutos) / 1_048_576:.1f} MB")
 
+    inicio = int(p.get("pagina_inicial") or 1)
+    parte = None
+
     with tempfile.TemporaryDirectory() as tmp:
         local = Path(tmp) / nome
         local.write_bytes(dados_brutos)
-        md, avisos, n_tabelas, paginas = converter(local)
+
+        total_paginas = contar_paginas(local)
+        alvo = local
+
+        if total_paginas and total_paginas > MAX_PAGINAS_POR_PARTE:
+            de = -(-total_paginas // MAX_PAGINAS_POR_PARTE)     # teto da divisao
+            n = (inicio - 1) // MAX_PAGINAS_POR_PARTE + 1
+            fim = min(inicio + MAX_PAGINAS_POR_PARTE, total_paginas + 1)
+            parte = {"n": n, "de": de, "pagina_inicial": inicio, "pagina_final": fim - 1}
+            print(f"  documento de {total_paginas} paginas — lendo a parte {n} de {de} "
+                  f"(paginas {inicio} a {fim - 1})")
+            alvo = recortar(local, inicio, fim, Path(tmp) / f"parte-{n}.pdf")
+
+        md, avisos, n_tabelas, paginas = converter(alvo)
 
     print(f"  extraido: {len(md)} caracteres, {n_tabelas} tabelas")
 
@@ -269,7 +319,8 @@ def processar(job):
         avisos.append("o extrator nao reconheceu nenhum titulo — o corte por "
                       "secao nao e confiavel neste arquivo")
 
-    md_path = f"convertidos/{Path(caminho).stem}.md"
+    sufixo = f"-parte{parte['n']:02d}" if parte else ""
+    md_path = f"convertidos/{Path(caminho).stem}{sufixo}.md"
     subir(md_path, md.encode("utf-8"))
     print(f"  markdown completo em {BUCKET}/{md_path}")
 
@@ -284,11 +335,17 @@ def processar(job):
     if not com_titulos:
         limitacoes.append("Documento sem estrutura de titulos: os trechos podem nao se "
                           "sustentar sozinhos.")
+    if parte:
+        limitacoes.append(
+            f"Este artefato e a parte {parte['n']} de {parte['de']} do documento "
+            f"(paginas {parte['pagina_inicial']} a {parte['pagina_final']}). Uma secao que "
+            f"comeca antes ou termina depois desse intervalo aparece cortada aqui.")
     limitacoes.append("Trechos de documento nao passaram por marcador — nenhuma etapa do "
                       "playbook e alcancada ate alguem marcar o que importa.")
 
     dados = {
-        "titulo": p.get("titulo") or nome,
+        "titulo": ((p.get("titulo") or nome)
+                   + (f" (parte {parte['n']} de {parte['de']})" if parte else ""))[:200],
         "origem": {
             "plataforma": "documento",
             "titulo_original": nome,
@@ -328,6 +385,9 @@ def processar(job):
         },
         "limitacoes": limitacoes,
     }
+    if parte:
+        dados["documento"]["parte"] = parte
+        dados["documento"]["paginas"] = parte["pagina_final"] - parte["pagina_inicial"] + 1
     if avisos:
         dados["documento"]["avisos_extracao"] = avisos[:50]
     if p.get("paginas"):
@@ -336,10 +396,27 @@ def processar(job):
     art = wheff.criar_artefato(
         ORG, "research_source", "OBSERVED", "research-source:v1", dados,
         criado_por=WORKER, escopo="ORG", status="APPROVED",
-        snapshot={"extrator": "docling", "bucket": BUCKET,
-                  "arquivo": caminho, "limites": {"itens": MAX_ITENS, "secoes": MAX_SECOES}},
+        snapshot={"extrator": "docling", "bucket": BUCKET, "arquivo": caminho,
+                  "parte": parte,
+                  "limites": {"itens": MAX_ITENS, "secoes": MAX_SECOES,
+                              "paginas_por_parte": MAX_PAGINAS_POR_PARTE}},
     )
     print(f"  OK {art['artifact_key']} — {len(itens)} trechos, {len(secoes)} secoes")
+
+    # A proxima fatia entra na fila sozinha. E a fila que faz o documento longo
+    # atravessar o teto de 45 minutos: cada execucao le uma parte e passa o
+    # bastao. Ninguem precisa dividir arquivo na mao nem ficar acionando.
+    if parte and parte["n"] < parte["de"]:
+        proxima = parte["pagina_final"] + 1
+        wheff.enfileirar(
+            ORG, "doc.ingest",
+            {**p, "pagina_inicial": proxima},
+            idempotency_key=f"doc:{caminho}:p{proxima}")
+        print(f"  enfileirada a parte {parte['n'] + 1} de {parte['de']} "
+              f"(a partir da pagina {proxima})")
+    elif parte:
+        print(f"  ultima parte — documento completo em {parte['de']} artefatos")
+
     return art
 
 

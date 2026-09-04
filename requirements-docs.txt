@@ -3,3 +3,4 @@
 # midia faria o loop de 10 minutos gastar varios minutos so instalando.
 docling>=2.0.0
 requests>=2.31.0
+pypdf>=4.0.0
