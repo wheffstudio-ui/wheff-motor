@@ -87,7 +87,20 @@ jobs:
           WHEFF_ORG: wheff
         run: python research_collect.py
 
-      - name: 5. Analisar o conteudo
+      # Classifica as conversas do direct e do WhatsApp, e transforma cada
+      # uma em research_source com as frases exatas. E o que faz 100
+      # conversas por dia virarem 5 para a dona olhar.
+      - name: 5. Atendimento — classificar conversas
+        if: always()
+        working-directory: worker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          WHEFF_ORG: wheff
+        run: python atendimento.py
+
+      - name: 6. Analisar o conteudo
         if: always()
         working-directory: worker
         env:
