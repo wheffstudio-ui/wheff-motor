@@ -45,10 +45,16 @@ MAX_RESUMO = 2000
 
 
 # ── Storage ────────────────────────────────────────────────────────────────
+# O Storage exige `apikey` alem do Authorization, igual ao resto da API. As
+# chaves novas do Supabase nao sao JWT, entao o gateway nao consegue deduzir o
+# projeto so pelo Bearer — sem o apikey a chamada volta 401.
+_SH = {"apikey": wheff.KEY, "Authorization": f"Bearer {wheff.KEY}"}
+
+
 def baixar(caminho: str) -> bytes:
     r = requests.get(
         f"{wheff.URL}/storage/v1/object/{BUCKET}/{caminho}",
-        headers={"Authorization": f"Bearer {wheff.KEY}"}, timeout=300)
+        headers=_SH, timeout=300)
     if r.status_code >= 300:
         raise RuntimeError(
             f"nao consegui baixar '{caminho}' do bucket '{BUCKET}' "
@@ -60,8 +66,7 @@ def baixar(caminho: str) -> bytes:
 def subir(caminho: str, conteudo: bytes, tipo="text/markdown") -> str:
     r = requests.post(
         f"{wheff.URL}/storage/v1/object/{BUCKET}/{caminho}",
-        headers={"Authorization": f"Bearer {wheff.KEY}",
-                 "Content-Type": tipo, "x-upsert": "true"},
+        headers={**_SH, "Content-Type": tipo, "x-upsert": "true"},
         data=conteudo, timeout=300)
     if r.status_code >= 300:
         raise RuntimeError(f"nao consegui guardar o markdown ({r.status_code}): {r.text[:300]}")
