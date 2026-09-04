@@ -1,14 +1,15 @@
 name: Leitor de Documentos
 
-# Separado do motor de midia de proposito: o Docling instala torch e baixa
-# modelos de layout. Rodar isso a cada 10 minutos gastaria a maior parte do
-# tempo instalando dependencia para, quase sempre, nao achar nada na fila.
+# Roda a cada 10 minutos, como o motor de midia. Voce envia o arquivo pela
+# plataforma e nao precisa entrar aqui.
 #
-# Aqui roda de hora em hora, ou na hora em que voce clicar em "Run workflow"
-# depois de enviar um arquivo pela plataforma.
+# O Docling instala torch e baixa modelos de layout (~85s), e foi por isso
+# que este workflow comecou de hora em hora. A solucao nao era esperar mais:
+# e conferir a fila ANTES de instalar. Uma passagem sem trabalho custa
+# segundos; so quando ha documento e que a instalacao acontece.
 on:
   schedule:
-    - cron: '17 * * * *'
+    - cron: '*/10 * * * *'
   workflow_dispatch:
   repository_dispatch:
     types: [doc-ingest]
@@ -24,9 +25,33 @@ jobs:
     # travamento consumir hora de runner a toa.
     timeout-minutes: 45
     steps:
+      # Porteiro: uma chamada HTTP, sem checkout e sem Python. E o que torna
+      # a passagem de 10 em 10 minutos barata.
+      - name: Ha documento esperando?
+        id: fila
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          set -euo pipefail
+          resposta=$(curl -sS \
+            -H "apikey: ${SUPABASE_SERVICE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
+            "${SUPABASE_URL%/}/rest/v1/jobs?job_type=eq.doc.ingest&status=eq.QUEUED&select=id&limit=1")
+          # Resposta vazia da API é "[]". Qualquer id dentro significa trabalho.
+          if echo "$resposta" | grep -q '"id"'; then
+            echo "tem=1" >> "$GITHUB_OUTPUT"
+            echo "ha documento na fila — seguindo para a leitura"
+          else
+            echo "tem=0" >> "$GITHUB_OUTPUT"
+            echo "fila vazia — encerrando sem instalar nada"
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.fila.outputs.tem == '1'
 
       - uses: actions/setup-python@v5
+        if: steps.fila.outputs.tem == '1'
         with:
           python-version: '3.12'
           cache: pip
@@ -35,6 +60,7 @@ jobs:
       # Os modelos de layout e de tabela do Docling sao baixados na primeira
       # execucao. Sem cache, seriam baixados de novo toda vez.
       - uses: actions/cache@v4
+        if: steps.fila.outputs.tem == '1'
         with:
           path: |
             ~/.cache/docling
@@ -42,9 +68,11 @@ jobs:
           key: docling-modelos-v1
 
       - name: Instalar Docling
+        if: steps.fila.outputs.tem == '1'
         run: pip install -q -r requirements-docs.txt
 
       - name: Ler documento da fila
+        if: steps.fila.outputs.tem == '1'
         working-directory: worker
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
