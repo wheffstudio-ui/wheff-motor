@@ -51,6 +51,38 @@ MAX_RESUMO = 2000
 _SH = {"apikey": wheff.KEY, "Authorization": f"Bearer {wheff.KEY}"}
 
 
+def _diagnostico() -> str:
+    """Descobre POR QUE o Storage recusou, em vez de repetir a mensagem dele.
+
+    O Storage responde 'Bucket not found' tanto para bucket inexistente quanto
+    para bucket que a chave nao tem direito de ver — de proposito, para nao
+    revelar o que existe. As duas causas tem correcoes opostas, entao vale
+    perguntar quantos buckets esta chave enxerga: service_role enxerga todos,
+    uma chave publica nao enxerga nenhum.
+    """
+    try:
+        r = requests.get(f"{wheff.URL}/storage/v1/bucket", headers=_SH, timeout=30)
+        if r.status_code >= 300:
+            return (f"a chave nem consegue listar buckets ({r.status_code}: "
+                    f"{r.text[:160]}). Quase certamente SUPABASE_SERVICE_KEY nao e "
+                    f"a chave secreta do projeto.")
+        nomes = [b.get("name") for b in r.json()]
+        if not nomes:
+            return ("esta chave enxerga ZERO buckets. Ela le as tabelas porque o RLS "
+                    "delas esta permissivo, mas nao e service_role — o Storage nao "
+                    "da acesso administrativo a ela. Troque o segredo "
+                    "SUPABASE_SERVICE_KEY pela chave SECRETA do projeto "
+                    "(Supabase > Settings > API Keys), nao a publicavel.")
+        if BUCKET not in nomes:
+            return (f"a chave e valida e enxerga {len(nomes)} bucket(s) — {nomes} — "
+                    f"mas '{BUCKET}' nao esta entre eles. Crie o bucket com esse nome "
+                    f"exato, ou ajuste WHEFF_BUCKET no workflow.")
+        return (f"o bucket '{BUCKET}' existe e a chave o enxerga, entao o problema e "
+                f"no caminho do arquivo, nao no bucket.")
+    except Exception as e:
+        return f"nao consegui diagnosticar ({type(e).__name__}: {e})"
+
+
 def baixar(caminho: str) -> bytes:
     r = requests.get(
         f"{wheff.URL}/storage/v1/object/{BUCKET}/{caminho}",
@@ -58,8 +90,8 @@ def baixar(caminho: str) -> bytes:
     if r.status_code >= 300:
         raise RuntimeError(
             f"nao consegui baixar '{caminho}' do bucket '{BUCKET}' "
-            f"({r.status_code}). Confira se o bucket existe e se o arquivo "
-            f"foi enviado pela plataforma. Resposta: {r.text[:300]}")
+            f"({r.status_code}). {_diagnostico()} "
+            f"Resposta crua do Storage: {r.text[:200]}")
     return r.content
 
 
