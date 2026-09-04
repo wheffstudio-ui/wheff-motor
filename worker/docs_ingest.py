@@ -348,7 +348,41 @@ def main():
     # Postgres devolve uma linha de NULLs quando nao ha job, e um dict de
     # NULLs e verdadeiro. Por isso a checagem e pelo id, nao pelo objeto.
     if not job or not job.get("id"):
-        print("nada na fila de documentos")
+        # "Nada na fila" pode ser fila vazia OU tarefa que existe e o
+        # claim_job nao enxerga — e as duas exigem acoes opostas. Ficar em
+        # silencio nas duas custou duas rodadas de investigacao, entao aqui
+        # ele conta o que ve e por que nao serviu.
+        print("nada na fila de documentos — conferindo se e mesmo fila vazia")
+        try:
+            r = requests.get(
+                f"{wheff.URL}/rest/v1/jobs"
+                f"?job_type=eq.doc.ingest&select=id,org_id,status,attempts,max_attempts,available_at"
+                f"&order=created_at.desc&limit=10",
+                headers=wheff.H, timeout=30)
+            linhas = r.json() if r.status_code < 300 else []
+            if not linhas:
+                print("  fila realmente vazia: nenhuma tarefa doc.ingest existe.")
+            for x in linhas:
+                motivos = []
+                if x.get("org_id") != ORG:
+                    motivos.append(f"org '{x.get('org_id')}' != '{ORG}' que este worker pede")
+                if x.get("status") != "QUEUED":
+                    motivos.append(f"status {x.get('status')}, e so QUEUED e pegavel")
+                if (x.get("available_at") or "") > datetime.now(timezone.utc).isoformat():
+                    motivos.append(f"agendada para {x['available_at']}, ainda no futuro")
+                explicacao = ("; ".join(motivos) if motivos else
+                              "deveria ter sido pega e nao foi — o problema esta no "
+                              "claim_job, nao nesta tarefa")
+                print(f"  {x['id'][:8]} status={x['status']} org={x['org_id']} "
+                      f"tentativas={x['attempts']}/{x['max_attempts']} -> {explicacao}")
+                # O log do Actions exige login, entao a conclusao vai para o
+                # campo que a plataforma ja mostra na tela de Fontes. Sem isto
+                # o diagnostico morre num lugar que a dona nao alcanca.
+                requests.patch(
+                    f"{wheff.URL}/rest/v1/jobs?id=eq.{x['id']}", headers=wheff.H, timeout=30,
+                    json={"last_error": "diagnostico do motor: " + explicacao})
+        except Exception as e:
+            print(f"  nao consegui conferir a fila: {type(e).__name__}: {e}")
         return 0
 
     print(f"Tarefa {job['id']} — tentativa {job.get('attempts')}")
