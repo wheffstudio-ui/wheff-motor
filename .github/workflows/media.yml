@@ -60,10 +60,22 @@ jobs:
           WHEFF_ORG: wheff
         run: python community.py
 
+      # O community.py enfileirava esta tarefa desde o comeco e ninguem a
+      # consumia — ficava parada na fila para sempre.
+      - name: 3. Manifesto da comunidade
+        if: always()
+        working-directory: worker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          WHEFF_ORG: wheff
+        run: python community_manifesto.py
+
       # Coleta de comentario. Nao usa Groq: nao gasta token nenhum, so busca
       # e guarda. Marcar o que e dor ou objecao continua sendo trabalho de
       # pessoa, na tela de Fontes.
-      - name: 3. Coletar pesquisa (YouTube / Reddit)
+      - name: 4. Coletar pesquisa (YouTube / Reddit)
         if: always()
         working-directory: worker
         env:
@@ -75,7 +87,7 @@ jobs:
           WHEFF_ORG: wheff
         run: python research_collect.py
 
-      - name: 4. Analisar o conteudo
+      - name: 5. Analisar o conteudo
         if: always()
         working-directory: worker
         env:

@@ -12,97 +12,16 @@ enfileirou. Antes de gastar um token, pergunta ao banco se o que ele exige
 existe aprovado. Se não existe, devolve a tarefa com a lista do que falta —
 em vez de gerar estratégia por cima de vazio.
 """
-import json
 import os
-import re
 import sys
-import time
 
-import requests
-
+import llm
 import wheff
 
 ORG = os.environ.get("WHEFF_ORG", "wheff")
 WORKER = f"gh-actions/{os.environ.get('GITHUB_RUN_ID', 'local')}"
-GROQ_KEY = os.environ["GROQ_API_KEY"]
 AGENTE = "community.dna:v1"
 PROMPT_V = "community-dna:v1"
-
-PREFERENCIA = [
-    "llama-3.3-70b-versatile", "openai/gpt-oss-120b",
-    "moonshotai/kimi-k2-instruct", "qwen/qwen3-32b", "llama-3.1-8b-instant",
-]
-_MODELO = None
-
-
-def escolher_modelo():
-    global _MODELO
-    if _MODELO:
-        return _MODELO
-    forcado = os.environ.get("GROQ_MODEL")
-    if forcado:
-        _MODELO = forcado
-        return _MODELO
-    r = requests.get("https://api.groq.com/openai/v1/models",
-                     headers={"Authorization": f"Bearer {GROQ_KEY}"}, timeout=30)
-    if r.status_code >= 300:
-        raise RuntimeError(f"Groq /models {r.status_code}: {r.text[:300]}")
-    disponiveis = {m["id"] for m in r.json().get("data", [])}
-    for m in PREFERENCIA:
-        if m in disponiveis:
-            _MODELO = m
-            print(f"  modelo: {m}")
-            return m
-    resto = sorted(x for x in disponiveis
-                   if not any(p in x for p in ("whisper", "tts", "guard", "vision")))
-    if not resto:
-        raise RuntimeError("nenhum modelo de texto disponível")
-    _MODELO = resto[0]
-    print(f"  modelo (fallback): {_MODELO}")
-    return _MODELO
-
-
-def groq(sistema, usuario, max_tokens=4000, tentativas=4):
-    """Mesma disciplina do dna_analyze: 429 é espera, não falha."""
-    modelo = escolher_modelo()
-    for t in range(1, tentativas + 1):
-        r = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {GROQ_KEY}",
-                     "Content-Type": "application/json"},
-            timeout=240,
-            json={"model": modelo, "temperature": 0.4, "max_tokens": max_tokens,
-                  "response_format": {"type": "json_object"},
-                  "messages": [{"role": "system", "content": sistema},
-                               {"role": "user", "content": usuario}]},
-        )
-        if r.status_code == 429:
-            # Distingue os dois 429 diferentes, que exigem respostas opostas:
-            # "esperei demais neste minuto" (esperar resolve) e "esta chamada
-            # sozinha e maior que o teto" (esperar nunca resolve).
-            det = re.search(r"Limit (\d+), Used (\d+), Requested (\d+)", r.text)
-            if det:
-                limite, usado, pedido = (int(x) for x in det.groups())
-                if pedido > limite:
-                    raise RuntimeError(
-                        f"a chamada sozinha pede {pedido} tokens e o teto e {limite}. "
-                        f"Esperar nao resolve: e preciso encurtar o prompt ou o max_tokens.")
-                print(f"    teto do minuto: {usado}/{limite}, pedindo {pedido}")
-            if t >= tentativas:
-                raise RuntimeError(f"Groq 429 apos {tentativas} tentativas: {r.text[:300]}")
-            espera = float(r.headers.get("retry-after") or 0)
-            if not espera:
-                m = re.search(r"try again in ([0-9.]+)s", r.text)
-                espera = float(m.group(1)) if m else 20.0
-            espera = min(espera + 2, 70)
-            print(f"    esperando {espera:.0f}s ({t}/{tentativas})")
-            time.sleep(espera)
-            continue
-        if r.status_code >= 300:
-            raise RuntimeError(f"Groq {r.status_code}: {r.text[:400]}")
-        return json.loads(r.json()["choices"][0]["message"]["content"])
-    raise RuntimeError("Groq: teto de tokens não liberou")
-
 
 # ── O prompt ────────────────────────────────────────────────────────────────
 # As três travas do schema aparecem aqui como regra explícita. Sem elas o
@@ -157,15 +76,6 @@ REGRAS QUE NÃO PODEM SER QUEBRADAS:
 LIMITE: você recebeu apenas os perfis de marca e público. Não tem dado de comportamento real de nenhuma comunidade existente, nem métrica, nem conversa de membro. Tudo que você produzir é HIPÓTESE a ser testada — escreva como tal."""
 
 
-def _corta(itens, n, campo="texto"):
-    """
-    Manda os N primeiros. O teto do Groq gratuito e por minuto e conta
-    entrada + saida: perfil rico demais deixa de caber. Melhor cortar de
-    forma previsivel do que estourar e nao gerar nada.
-    """
-    vals = [(x.get(campo) if isinstance(x, dict) else x) or "" for x in (itens or [])]
-    vals = [v for v in vals if v]
-    return " | ".join(vals[:n]) + (f"  (+{len(vals)-n} nao enviados)" if len(vals) > n else "")
 
 
 def montar_entrada(marca, publico, mercado):
@@ -181,23 +91,23 @@ def montar_entrada(marca, publico, mercado):
         f"Essência: {m.get('essencia')}",
         f"Propósito: {m.get('proposito')}",
         f"INIMIGO COMUM DECLARADO PELA MARCA: {m.get('inimigo_comum')}",
-        f"Crenças: {_corta(m.get('crencas'), 6)}",
+        f"Crenças: {llm.corta(m.get('crencas'), 6)}",
         f"Valores: {' | '.join(v.get('nome','') for v in (m.get('valores') or []))}",
         f"Tom de voz: {(m.get('tom_de_voz') or {}).get('descricao')}",
         f"Somos: {', '.join((m.get('tom_de_voz') or {}).get('somos') or [])}",
         f"NÃO somos: {', '.join((m.get('tom_de_voz') or {}).get('nao_somos') or [])}",
         f"PROIBIÇÕES: {' | '.join(m.get('proibicoes') or [])}",
-        f"Não é para: {_corta(m.get('nao_e_para'), 5)}",
+        f"Não é para: {llm.corta(m.get('nao_e_para'), 5)}",
         f"Jargões: {' | '.join(m.get('jargoes') or [])}",
         "",
         "═══ PÚBLICO ═══",
         f"Nome: {p.get('nome')}",
         f"Resumo: {p.get('resumo')}",
         f"TENSÃO COMPARTILHADA DECLARADA: {p.get('tensao_compartilhada')}",
-        "Dores: " + _corta(p.get("dores"), 12),
-        "Desejos: " + _corta(p.get("desejos"), 8),
-        "Objeções: " + _corta(p.get("objecoes"), 7),
-        "Crenças dela: " + _corta(p.get("crencas"), 5),
+        "Dores: " + llm.corta(p.get("dores"), 12),
+        "Desejos: " + llm.corta(p.get("desejos"), 8),
+        "Objeções: " + llm.corta(p.get("objecoes"), 7),
+        "Crenças dela: " + llm.corta(p.get("crencas"), 5),
         f"Expressões que ela usa: {', '.join((p.get('linguagem') or {}).get('expressoes') or [])}",
         f"Termos que a afastam: {', '.join((p.get('linguagem') or {}).get('evitar') or [])}",
         f"Confiança do perfil de público: {p.get('confidence')}",
@@ -246,7 +156,7 @@ def executar(job):
         print(f"  {ja[0]['artifact_key']} já existia — nada a fazer")
         return
 
-    dna = groq(SISTEMA, montar_entrada(marca, publico, mercado))
+    dna = llm.groq(SISTEMA, montar_entrada(marca, publico, mercado))
 
     # ── Validação: o schema exige, o worker confere ─────────────────────────
     if not isinstance(dna.get("confidence"), (int, float)):
@@ -275,7 +185,7 @@ def executar(job):
         ORG, "community_dna", "HYPOTHESIS", "community-dna:v1", escopo="ORG",
         status="AWAITING_APPROVAL", criado_por=f"agent:{AGENTE}", dados=dna,
         snapshot={
-            "agente": AGENTE, "prompt": PROMPT_V, "modelo": escolher_modelo(),
+            "agente": AGENTE, "prompt": PROMPT_V, "modelo": llm.escolher_modelo(),
             "marca": f"{marca['artifact_key']}:v{marca['version']}",
             "publico": f"{publico['artifact_key']}:v{publico['version']}",
             "mercado": f"{mercado['artifact_key']}:v{mercado['version']}" if mercado else None,
