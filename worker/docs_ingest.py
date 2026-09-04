@@ -343,6 +343,41 @@ def processar(job):
     return art
 
 
+def anotar(msg: str) -> None:
+    """Publica uma anotacao no GitHub Actions.
+
+    O log do Actions exige login; a ANOTACAO nao — ela sai na API publica do
+    repositorio. Quando o worker nao enxerga nem a tabela jobs, este e o
+    unico canal que sobra para dizer o que esta acontecendo.
+    """
+    print("::error::" + msg.replace("\r", "").replace("\n", "%0A"))
+
+
+def sondar() -> str:
+    """Quem sou eu para este banco, e o que eu consigo ver?"""
+    partes = []
+    for rotulo, url in (
+        ("jobs de qualquer tipo", f"{wheff.URL}/rest/v1/jobs?select=job_type,status,org_id&limit=50"),
+        ("artefatos",             f"{wheff.URL}/rest/v1/artifacts?select=type&limit=5"),
+        ("marcas",                f"{wheff.URL}/rest/v1/marcas?select=id&limit=5"),
+    ):
+        try:
+            r = requests.get(url, headers=wheff.H, timeout=30)
+            if r.status_code >= 300:
+                partes.append(f"{rotulo}: HTTP {r.status_code} {r.text[:90]}")
+            else:
+                linhas = r.json()
+                extra = ""
+                if rotulo.startswith("jobs") and linhas:
+                    tipos = sorted({f"{x['job_type']}/{x['status']}/{x['org_id']}" for x in linhas})
+                    extra = " -> " + ", ".join(tipos[:8])
+                partes.append(f"{rotulo}: {len(linhas)}{extra}")
+        except Exception as e:
+            partes.append(f"{rotulo}: {type(e).__name__}")
+    projeto = wheff.URL.split("//")[-1].split(".")[0]
+    return f"projeto={projeto} org={ORG} | " + " | ".join(partes)
+
+
 def main():
     job = wheff.pegar_job(ORG, WORKER, ["doc.ingest"])
     # Postgres devolve uma linha de NULLs quando nao ha job, e um dict de
@@ -361,7 +396,10 @@ def main():
                 headers=wheff.H, timeout=30)
             linhas = r.json() if r.status_code < 300 else []
             if not linhas:
-                print("  fila realmente vazia: nenhuma tarefa doc.ingest existe.")
+                print("  nenhuma tarefa doc.ingest visivel para esta chave.")
+                # Se a plataforma mostra a tarefa e o worker nao a ve, a
+                # diferenca esta na credencial ou no projeto — nunca na fila.
+                anotar("Nao vejo nenhuma tarefa doc.ingest. Sondagem: " + sondar())
             for x in linhas:
                 motivos = []
                 if x.get("org_id") != ORG:
