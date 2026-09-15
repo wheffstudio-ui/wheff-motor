@@ -49,6 +49,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          YTDLP_COOKIES: ${{ secrets.YTDLP_COOKIES }}
           WHEFF_ORG: wheff
           WHISPER_MODEL: small
         run: python media_ingest.py

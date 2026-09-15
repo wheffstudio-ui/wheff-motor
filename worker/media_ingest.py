@@ -25,11 +25,19 @@ MODELO = os.environ.get("WHISPER_MODEL", "base")
 def baixar(url, pasta):
     """yt-dlp: metadados + arquivo de áudio."""
     saida = os.path.join(pasta, "midia")
-    r = subprocess.run(
-        ["yt-dlp", "--no-playlist", "--write-info-json", "--no-warnings",
-         "-f", "bestaudio/best", "-o", saida + ".%(ext)s", url],
-        capture_output=True, text=True, timeout=600,
-    )
+    cmd = ["yt-dlp", "--no-playlist", "--write-info-json", "--no-warnings",
+           "-f", "bestaudio/best", "-o", saida + ".%(ext)s"]
+    # O YouTube bloqueia download vindo de servidor do GitHub ("confirm you're
+    # not a bot"). Com o segredo YTDLP_COOKIES — cookies de uma conta Google
+    # SECUNDARIA, no formato Netscape — o yt-dlp entra como pessoa logada.
+    # O arquivo nasce na pasta temporaria da tarefa e morre com ela.
+    cookies = os.environ.get("YTDLP_COOKIES", "").strip()
+    if cookies:
+        arq = os.path.join(pasta, "cookies.txt")
+        with open(arq, "w", encoding="utf-8") as f:
+            f.write(cookies + "\n")
+        cmd += ["--cookies", arq]
+    r = subprocess.run(cmd + [url], capture_output=True, text=True, timeout=600)
     if r.returncode != 0:
         # Antes o erro gravado era so "returned non-zero exit status 1": o
         # cartao da Esteira mostrava que falhou, e nao por que. O motivo real
@@ -38,7 +46,10 @@ def baixar(url, pasta):
         motivo = " | ".join(linhas[-3:])[:600] or "sem mensagem do yt-dlp"
         if "confirm you" in motivo.lower() or "not a bot" in motivo.lower():
             raise RuntimeError("O YouTube bloqueou o download vindo do servidor do GitHub "
-                               "(pede para confirmar que nao e robo). " + motivo)
+                               "(pede para confirmar que nao e robo). "
+                               + ("Os cookies configurados nao foram aceitos — exporte de novo. " if cookies
+                                  else "Configure o segredo YTDLP_COOKIES ou use link do TikTok/Instagram. ")
+                               + motivo)
         if "private" in motivo.lower() or "age" in motivo.lower() or "sign in" in motivo.lower():
             raise RuntimeError("Video privado, restrito por idade ou que exige login. " + motivo)
         raise RuntimeError("yt-dlp nao conseguiu baixar: " + motivo)

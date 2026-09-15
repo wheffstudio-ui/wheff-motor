@@ -127,7 +127,7 @@ def executar(job):
             "rode a estrategia de comunidade primeiro.")
 
     if art_dna.get("status") != "APPROVED":
-        raise RuntimeError(
+        raise AguardandoAprovacao(
             f"o DNA {art_dna['artifact_key']} esta {art_dna.get('status')}, nao APPROVED. "
             f"Manifesto e texto que vira identidade de grupo: escrever por cima de "
             f"hipotese que voce ainda nao leu seria construir em areia. "
@@ -211,6 +211,11 @@ def executar(job):
     return art
 
 
+class AguardandoAprovacao(RuntimeError):
+    """Nao e falha: a tarefa espera a dona aprovar o DNA. Antes isto saia com
+    codigo 1 e pintava o motor inteiro de vermelho a cada execucao — 82 vezes."""
+
+
 def main():
     job = wheff.pegar_job(ORG, WORKER, ["community.manifesto"], minutos=15)
     if not job or not job.get("id"):
@@ -221,6 +226,11 @@ def main():
         executar(job)
         wheff.terminar_job(ORG, job["id"])
         print("OK — aguardando sua aprovacao")
+        return 0
+    except AguardandoAprovacao as e:
+        # Volta para a fila com o motivo visivel, e o passo termina verde.
+        wheff.terminar_job(ORG, job["id"], erro=str(e))
+        print(f"AGUARDANDO: {e}")
         return 0
     except Exception as e:
         import traceback
