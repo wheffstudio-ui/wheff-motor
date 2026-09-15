@@ -77,7 +77,8 @@ def montar_entrada(dna: dict) -> str:
     per = d.get("pertencimento") or {}
 
     partes = [
-        f"NOME INTERNO: {d.get('nome', '')}",
+        f"ESTRATEGIA: {d.get('nome', 'Brand Lovers')} (nome interno da Wheff — nunca aparece no manifesto)",
+        f"NOME DO MOVIMENTO (proposta para esta marca): {d.get('nome_do_movimento', '')}",
         f"CAUSA: {d.get('causa', '')}",
         "",
         f"TENSAO COMPARTILHADA: {ten.get('compartilhada', '')}",
