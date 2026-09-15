@@ -74,7 +74,7 @@ REGRAS QUE NÃO PODEM SER QUEBRADAS:
 
 8. Escreva em português do Brasil, na voz da marca.
 
-9. "nome" é SEMPRE "Brand Lovers" — o nome universal da estratégia de comunidades da Wheff, igual para qualquer marca. Não mude. O nome que aparece para as pessoas vai em "nome_do_movimento": uma PROPOSTA personalizada para esta marca, que a dona decide.
+9. "nome" é SEMPRE "Brand Lovers" — o nome universal da estratégia de comunidades da Wheff, igual para qualquer marca. Não mude. "nome_do_movimento" fica SEMPRE vazio: quem escolhe o nome do movimento é a dona, nunca a IA. Não sugira nome em nenhum campo.
 
 LIMITE: você recebeu apenas os perfis de marca e público. Não tem dado de comportamento real de nenhuma comunidade existente, nem métrica, nem conversa de membro. Tudo que você produzir é HIPÓTESE a ser testada — escreva como tal."""
 
@@ -166,10 +166,9 @@ def executar(job):
         dna["confidence"] = 0.5
     # Nao confia no modelo para o nome da estrategia: e fixo por decisao da
     # dona. Se ele escreveu outro nome em "nome", aquilo era o nome do movimento.
-    proposto = (dna.get("nome") or "").strip()
-    if proposto and proposto.lower() != "brand lovers" and not (dna.get("nome_do_movimento") or "").strip():
-        dna["nome_do_movimento"] = proposto
+    # O nome do movimento e escolha da dona: qualquer nome vindo do modelo e descartado.
     dna["nome"] = "Brand Lovers"
+    dna["nome_do_movimento"] = ""
     tc = dna.get("transformacao_coletiva") or {}
     if not (tc.get("juntas_porque") or "").strip():
         raise RuntimeError("o modelo não respondeu 'juntas_porque' — sem isso "
