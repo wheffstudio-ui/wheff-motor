@@ -92,6 +92,10 @@ jobs:
       # conversas por dia virarem 5 para a dona olhar.
       - name: 5. Atendimento — classificar conversas
         if: always()
+        # Sem a tabela de conversas (sql/atendimento.sql nao rodado), este passo
+        # falha. Nao pode pintar o motor inteiro de vermelho nem esconder se a
+        # analise de conteudo, que vem depois, deu certo.
+        continue-on-error: true
         working-directory: worker
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
