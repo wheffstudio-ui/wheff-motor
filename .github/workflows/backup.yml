@@ -40,18 +40,19 @@ jobs:
           BACKUP_DIR: ${{ github.workspace }}/backup
         run: python backup.py
 
-      # Copia 1: fica 90 dias aqui, sem configurar nada
-      - name: Guardar como artefato
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheff-backup-${{ github.run_number }}
-          path: backup/
-          retention-days: 90
+      # NAO existe mais "copia como artefato". Este repositorio e PUBLICO:
+      # artefato de repo publico pode ser baixado por qualquer conta do GitHub.
+      # Entre 04/09 e 15/09/2026 o banco inteiro ficou exposto assim, 12 vezes.
+      # O backup agora vai SO para o repositorio privado. Sem ele configurado,
+      # o workflow falha de proposito — falhar e melhor que expor.
+      - name: Exigir repositorio privado
+        if: env.BACKUP_REPO == '' || env.BACKUP_REPO_TOKEN == ''
+        run: |
+          echo "::error::Configure os segredos BACKUP_REPO e BACKUP_REPO_TOKEN. Sem repositorio privado, o backup nao e guardado em lugar nenhum."
+          rm -rf backup
+          exit 1
 
-      # Copia 2: permanente, em repositorio PRIVADO.
-      # So roda se o segredo existir — sem ele, o passo e pulado sem erro.
       - name: Enviar para o repositorio privado
-        if: env.BACKUP_REPO != '' && env.BACKUP_REPO_TOKEN != ''
         run: |
           set -e
           git clone --depth 1 \

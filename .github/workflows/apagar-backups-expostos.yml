@@ -1,0 +1,41 @@
+name: Apagar backups expostos
+
+# Este repositorio e publico. Ate 15/09/2026 o workflow de backup guardava o
+# banco inteiro como artefato, e artefato de repositorio publico pode ser
+# baixado por qualquer conta do GitHub. Este workflow apaga todos eles.
+#
+# Roda sozinho quando este arquivo chega ao GitHub, e pode ser rodado de novo
+# pela aba Actions. Usa o token do proprio workflow (GITHUB_TOKEN) — nenhum
+# segredo precisa ser criado.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apagar-backups-expostos.yml'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  apagar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const artefatos = await github.paginate(
+              github.rest.actions.listArtifactsForRepo,
+              { owner: context.repo.owner, repo: context.repo.repo, per_page: 100 });
+            const alvos = artefatos.filter(a => a.name.startsWith('wheff-backup'));
+            for (const a of alvos) {
+              await github.rest.actions.deleteArtifact({
+                owner: context.repo.owner, repo: context.repo.repo, artifact_id: a.id });
+              core.info(`apagado: ${a.name} (${a.created_at})`);
+            }
+            core.info(`${alvos.length} artefato(s) de backup apagado(s).`);
+            const restantes = (await github.paginate(
+              github.rest.actions.listArtifactsForRepo,
+              { owner: context.repo.owner, repo: context.repo.repo, per_page: 100 }))
+              .filter(a => a.name.startsWith('wheff-backup'));
+            if (restantes.length) core.setFailed(`${restantes.length} ainda existem.`);
