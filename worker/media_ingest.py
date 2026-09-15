@@ -25,11 +25,23 @@ MODELO = os.environ.get("WHISPER_MODEL", "base")
 def baixar(url, pasta):
     """yt-dlp: metadados + arquivo de áudio."""
     saida = os.path.join(pasta, "midia")
-    subprocess.run(
+    r = subprocess.run(
         ["yt-dlp", "--no-playlist", "--write-info-json", "--no-warnings",
          "-f", "bestaudio/best", "-o", saida + ".%(ext)s", url],
-        check=True, capture_output=True, text=True, timeout=600,
+        capture_output=True, text=True, timeout=600,
     )
+    if r.returncode != 0:
+        # Antes o erro gravado era so "returned non-zero exit status 1": o
+        # cartao da Esteira mostrava que falhou, e nao por que. O motivo real
+        # esta no stderr do yt-dlp.
+        linhas = [l for l in (r.stderr or "").splitlines() if l.strip()]
+        motivo = " | ".join(linhas[-3:])[:600] or "sem mensagem do yt-dlp"
+        if "confirm you" in motivo.lower() or "not a bot" in motivo.lower():
+            raise RuntimeError("O YouTube bloqueou o download vindo do servidor do GitHub "
+                               "(pede para confirmar que nao e robo). " + motivo)
+        if "private" in motivo.lower() or "age" in motivo.lower() or "sign in" in motivo.lower():
+            raise RuntimeError("Video privado, restrito por idade ou que exige login. " + motivo)
+        raise RuntimeError("yt-dlp nao conseguiu baixar: " + motivo)
     info_path = next((os.path.join(pasta, f) for f in os.listdir(pasta)
                       if f.endswith(".info.json")), None)
     if not info_path:

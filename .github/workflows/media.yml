@@ -30,7 +30,11 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
 
       - name: Instalar dependencias
-        run: pip install -q -r requirements.txt
+        # yt-dlp sempre na versao mais nova: o YouTube muda e versao antiga
+        # para de baixar ate ser atualizada.
+        run: |
+          pip install -q -r requirements.txt
+          pip install -q -U yt-dlp
 
       # Guarda o modelo do Whisper entre execucoes (evita baixar 140MB toda vez)
       - uses: actions/cache@v4
