@@ -50,6 +50,9 @@ def baixar(url, pasta):
                                + ("Os cookies configurados nao foram aceitos — exporte de novo. " if cookies
                                   else "Configure o segredo YTDLP_COOKIES ou use link do TikTok/Instagram. ")
                                + motivo)
+        if "needs to be reloaded" in motivo.lower():
+            raise RuntimeError("O YouTube recusou a sessao vinda do servidor (pede para recarregar a pagina). "
+                               "Cookies vencidos ou bloqueio do servidor do GitHub. " + motivo)
         if "private" in motivo.lower() or "age" in motivo.lower() or "sign in" in motivo.lower():
             raise RuntimeError("Video privado, restrito por idade ou que exige login. " + motivo)
         raise RuntimeError("yt-dlp nao conseguiu baixar: " + motivo)
