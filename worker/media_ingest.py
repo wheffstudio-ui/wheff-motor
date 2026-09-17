@@ -166,6 +166,11 @@ def main():
         return 0
     except Exception as e:
         print(f"ERRO: {e}", file=sys.stderr)
+        # Anotacao do GitHub: aparece no resumo da execucao sem abrir o log.
+        # Sem links (o repo e publico).
+        import re
+        curto = re.sub(r"https?://\S+", "[link]", str(e)).replace("\n", " ")[:900]
+        print(f"::error title=Baixar e transcrever::{curto}")
         wheff.terminar_job(ORG, job["id"], erro=e)
         return 1
 

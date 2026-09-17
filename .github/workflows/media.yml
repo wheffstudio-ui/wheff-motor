@@ -29,12 +29,18 @@ jobs:
       - name: Instalar ffmpeg
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
 
+      # Desde nov/2025 o yt-dlp precisa de um interpretador JavaScript (Deno)
+      # para resolver o desafio do YouTube; sem ele o download falha.
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
       - name: Instalar dependencias
         # yt-dlp sempre na versao mais nova: o YouTube muda e versao antiga
-        # para de baixar ate ser atualizada.
+        # para de baixar ate ser atualizada. [default] traz o yt-dlp-ejs.
         run: |
           pip install -q -r requirements.txt
-          pip install -q -U yt-dlp
+          pip install -q -U "yt-dlp[default]"
 
       # Guarda o modelo do Whisper entre execucoes (evita baixar 140MB toda vez)
       - uses: actions/cache@v4
