@@ -69,7 +69,7 @@ def escolher_modelo():
     return _MODELO
 
 
-def groq(sistema, usuario, max_tokens=4000, tentativas=4):
+def groq(sistema, usuario, max_tokens=2500, tentativas=4):
     """
     Chama o Groq respeitando o teto de tokens por minuto do plano gratuito.
 
@@ -85,6 +85,8 @@ def groq(sistema, usuario, max_tokens=4000, tentativas=4):
             timeout=180,
             json={"model": MODELO, "temperature": 0.3, "max_tokens": max_tokens,
                   "response_format": {"type": "json_object"},
+                  # gpt-oss gasta o teto pensando se nao for contido
+                  **({"reasoning_effort": "low"} if "gpt-oss" in MODELO else {}),
                   "messages": [{"role": "system", "content": sistema},
                                {"role": "user", "content": usuario}]},
         )
@@ -148,6 +150,42 @@ REGRAS:
 - Preserve os mesmos ids. Não junte nem divida trechos."""
 
 
+# Plano gratuito do Groq: 8 mil tokens por minuto, somando pergunta e
+# resposta. Video longo estourava (29 mil). O texto vai em blocos de ~20s e
+# com teto de caracteres; o que ficar de fora e declarado nas limitacoes.
+TETO_CARACTERES = 9000
+
+
+def texto_compacto(trechos):
+    blocos, atual = [], None
+    for t in trechos:
+        if atual and t["inicio"] - atual["inicio"] < 20:
+            atual["fim"], atual["texto"] = t["fim"], atual["texto"] + " " + t["texto"]
+        else:
+            atual = {"inicio": t["inicio"], "fim": t["fim"], "texto": t["texto"]}
+            blocos.append(atual)
+    linhas, total = [], 0
+    for b in blocos:
+        linha = f"{b['inicio']}s–{b['fim']}s: {b['texto']}"
+        if total + len(linha) > TETO_CARACTERES:
+            return "\n".join(linhas), round(b["inicio"])
+        linhas.append(linha)
+        total += len(linha) + 1
+    return "\n".join(linhas), None
+
+
+def lotes(trechos, teto):
+    lote, total = [], 0
+    for t in trechos:
+        if lote and total + len(t["texto"]) > teto:
+            yield lote
+            lote, total = [], 0
+        lote.append(t)
+        total += len(t["texto"])
+    if lote:
+        yield lote
+
+
 def executar(job):
     tr = wheff.buscar_artefato(job["payload"]["transcript_artifact_id"])
     if not tr:
@@ -156,8 +194,7 @@ def executar(job):
     if not trechos:
         raise RuntimeError("transcrição vazia")
 
-    texto = "\n".join(f"[{t['id']}] {t['inicio']}s–{t['fim']}s: {t['texto']}"
-                      for t in trechos)
+    texto, corte = texto_compacto(trechos)
 
     # Se uma execução anterior morreu no meio, aproveita o que já ficou
     # pronto. Sem isso, cada tentativa criava um DNA duplicado.
@@ -178,6 +215,10 @@ def executar(job):
         dna["idioma_original"] = tr["data"].get("idioma")
         dna["limitacoes"] = ["Somente áudio analisado. "
                              "Sem análise visual, de corte ou de texto em tela."]
+        if corte:
+            dna["limitacoes"].append(
+                f"Vídeo longo: só os primeiros {corte}s da fala entraram na análise "
+                "(teto de tokens do plano gratuito do Groq).")
 
         art = wheff.criar_artefato(
             ORG, "content_dna", "HYPOTHESIS", "content-dna:v1", escopo="SHARED",
@@ -194,10 +235,14 @@ def executar(job):
     if ja_traduzido:
         print(f"  {ja_traduzido[0]['artifact_key']} já existia — pulando")
     elif (tr["data"].get("idioma") or "").lower() != "pt":
-        t = groq(SISTEMA_TRAD, json.dumps(
-            {"trechos": [{"id": x["id"], "texto": x["texto"]} for x in trechos]},
-            ensure_ascii=False), max_tokens=1500)
-        por_id = {x["id"]: x["texto"] for x in (t.get("trechos") or [])}
+        # Em lotes: o plano gratuito aceita ~8 mil tokens por minuto, e o
+        # groq() ja espera quando o Groq pede.
+        por_id = {}
+        for lote in lotes(trechos, 3000):
+            t = groq(SISTEMA_TRAD, json.dumps(
+                {"trechos": [{"id": x["id"], "texto": x["texto"]} for x in lote]},
+                ensure_ascii=False), max_tokens=2000)
+            por_id.update({x["id"]: x["texto"] for x in (t.get("trechos") or [])})
         traduzidos = [{**x, "texto": por_id.get(x["id"], x["texto"])} for x in trechos]
 
         trad = wheff.criar_artefato(
