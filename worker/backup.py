@@ -30,6 +30,13 @@ TABELAS = [
     "artifact_counters",
     "marcas",
     "plataforma",        # o PDB inteiro, o dado antigo
+    "papeis",            # a lista de acesso (quem entra e com que papel)
+    "perfis",            # nome e foto da equipe
+    "portal_progresso",  # o que a produtora marcou como gravado
+    "conversas",         # atendimento
+    "mensagens",
+    "respostas_prontas",
+    "onboarding",
 ]
 
 
