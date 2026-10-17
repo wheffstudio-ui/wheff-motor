@@ -1,0 +1,54 @@
+name: Notificacoes no celular
+
+# Todo dia as 8h da manha (horario de Brasilia = 11h UTC), ou quando voce
+# mandar. Rodando a mao, da para mandar so uma notificacao de teste.
+# O GitHub pode atrasar a tarefa agendada em alguns minutos.
+on:
+  schedule:
+    - cron: '0 11 * * *'
+  workflow_dispatch:
+    inputs:
+      teste:
+        description: 'So uma notificacao de teste para todos os aparelhos ativados'
+        type: boolean
+        default: false
+
+concurrency:
+  group: notificacoes
+  cancel-in-progress: false
+
+jobs:
+  enviar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Segredo como env do job: o `if` dos passos nao aceita `secrets` direto
+    env:
+      VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+    steps:
+      - name: Avisar se as notificacoes ainda nao foram ligadas
+        if: env.VAPID_PRIVATE_KEY == ''
+        run: echo "::notice::Notificacoes desligadas - falta o segredo VAPID_PRIVATE_KEY (passo a passo no SETUP.md da plataforma, secao Notificacoes)."
+
+      - uses: actions/checkout@v4
+        if: env.VAPID_PRIVATE_KEY != ''
+
+      - uses: actions/setup-python@v5
+        if: env.VAPID_PRIVATE_KEY != ''
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Instalar dependencias
+        if: env.VAPID_PRIVATE_KEY != ''
+        run: pip install -q requests pywebpush
+
+      - name: Montar e enviar os avisos
+        if: env.VAPID_PRIVATE_KEY != ''
+        working-directory: worker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          VAPID_SUBJECT: mailto:wheffstudio@gmail.com
+          TESTE: ${{ inputs.teste && '1' || '' }}
+        run: python notificacoes.py

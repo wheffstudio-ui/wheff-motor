@@ -4,3 +4,6 @@ __pycache__/
 *.mp4
 *.m4a
 *.info.json
+
+# Chaves locais (nunca vão para o git)
+.env.*
