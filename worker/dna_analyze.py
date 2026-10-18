@@ -156,7 +156,22 @@ REGRAS:
 TETO_CARACTERES = 9000
 
 
+def sem_tempos(trechos):
+    """Transcrição colada pela pessoa (Fase 7) não tem segundos."""
+    return not any(isinstance(t.get("inicio"), (int, float)) for t in trechos)
+
+
 def texto_compacto(trechos):
+    # Sem segundos: numera os trechos em vez de inventar tempo.
+    if sem_tempos(trechos):
+        linhas, total = [], 0
+        for t in trechos:
+            linha = f"[trecho {t['id']}] {t['texto']}"
+            if total + len(linha) > TETO_CARACTERES:
+                return "\n".join(linhas), f"trecho {t['id']}"
+            linhas.append(linha)
+            total += len(linha) + 1
+        return "\n".join(linhas), None
     blocos, atual = [], None
     for t in trechos:
         if atual and t["inicio"] - atual["inicio"] < 20:
@@ -206,16 +221,24 @@ def executar(job):
         art = None
 
     # 1. DNA — sempre sobre o texto original
+    manual = sem_tempos(trechos)
+    aviso = ("ATENÇÃO: esta transcrição foi colada por uma pessoa e NÃO tem tempos. "
+             "Deixe todo \"inicio\" e \"fim\" como null e cite só o trecho_id.\n") if manual else ""
     dna = None if art else groq(SISTEMA_DNA,
-               f"Idioma original: {tr['data'].get('idioma')}\n"
-               f"Duração: {tr['data'].get('duracao')}s\n\n{texto}")
+               f"{aviso}Idioma original: {tr['data'].get('idioma')}\n"
+               f"Duração: {tr['data'].get('duracao') or 'desconhecida'}s\n\n{texto}")
     if dna is not None:
         if not isinstance(dna.get("confidence"), (int, float)):
             dna["confidence"] = 0.5
         dna["idioma_original"] = tr["data"].get("idioma")
         dna["limitacoes"] = ["Somente áudio analisado. "
                              "Sem análise visual, de corte ou de texto em tela."]
-        if corte:
+        if manual:
+            dna["limitacoes"].append("Transcrição enviada pela pessoa (o download não foi possível): "
+                                     "sem tempos, então hook e estrutura não têm segundos.")
+        if corte and manual:
+            dna["limitacoes"].append(f"Texto longo: a análise foi até o {corte} (teto de tokens do plano gratuito do Groq).")
+        elif corte:
             dna["limitacoes"].append(
                 f"Vídeo longo: só os primeiros {corte}s da fala entraram na análise "
                 "(teto de tokens do plano gratuito do Groq).")

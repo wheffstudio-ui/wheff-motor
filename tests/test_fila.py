@@ -128,5 +128,20 @@ class TestReprocessarMidia(unittest.TestCase):
         self.assertTrue(str(ctx.exception).startswith(mi.MARCA_INDISPONIVEL))
 
 
+class TestTranscricaoManual(unittest.TestCase):
+    def test_sem_tempos_nao_inventa_segundos(self):
+        os.environ.setdefault("GROQ_API_KEY", "teste")
+        import dna_analyze as d
+        manual = [{"id": 0, "inicio": None, "fim": None, "texto": "Oi gente"},
+                  {"id": 1, "inicio": None, "fim": None, "texto": "hoje vou mostrar"}]
+        texto, corte = d.texto_compacto(manual)
+        self.assertEqual(texto, "[trecho 0] Oi gente\n[trecho 1] hoje vou mostrar")
+        self.assertNotIn("s–", texto)
+        self.assertTrue(d.sem_tempos(manual))
+        com_tempo = [{"id": 0, "inicio": 0.0, "fim": 2.1, "texto": "Oi"}]
+        self.assertFalse(d.sem_tempos(com_tempo))
+        self.assertIn("0.0s–2.1s", d.texto_compacto(com_tempo)[0])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
