@@ -19,23 +19,68 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
+      # Porteiro (Fase 7): uma consulta ao banco, sem checkout e sem Python.
+      # Diz o que tem trabalho; o resto do workflow só instala e roda o que
+      # precisa. Conta como trabalho: tarefa na fila já liberada (respeita a
+      # espera entre tentativas) e tarefa travada com reserva vencida (o
+      # claim_job a recupera). Antes, toda passagem instalava ffmpeg, Deno e
+      # Whisper mesmo com a fila vazia.
+      - name: Tem trabalho?
+        id: fila
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          set -uo pipefail
+          echo "inicio=$(date +%s)" >> "$GITHUB_OUTPUT"
+          agora=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          base="${SUPABASE_URL%/}/rest/v1"
+          h1="apikey: ${SUPABASE_SERVICE_KEY}"; h2="Authorization: Bearer ${SUPABASE_SERVICE_KEY}"
+          tipos=$(curl -sS -H "$h1" -H "$h2" \
+            "$base/jobs?org_id=eq.wheff&select=job_type&or=(and(status.eq.QUEUED,available_at.lte.$agora),and(status.eq.RUNNING,lease_expires_at.lt.$agora))" \
+            | jq -r '.[].job_type' 2>/dev/null || echo "ERRO")
+          conversas=$(curl -sS -H "$h1" -H "$h2" \
+            "$base/conversas?org_id=eq.wheff&fonte_id=is.null&status=in.(ABERTA,ESPERANDO)&select=id&limit=1" \
+            | jq -r 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)
+          tem() { echo "$tipos" | grep -qE "$1" && echo 1 || echo 0; }
+          if [ "$tipos" = "ERRO" ]; then
+            # Não consegui perguntar: roda tudo, como antes (melhor gastar do que perder trabalho)
+            m=1; c=1; mf=1; p=1; d=1; a=1
+            echo "::warning title=Porteiro::nao consegui consultar a fila — rodando todos os passos"
+          else
+            m=$(tem '^media\.ingest$'); c=$(tem '^community\.dna$'); mf=$(tem '^community\.manifesto$')
+            p=$(tem '^research\.'); d=$(tem '^dna\.analyze$')
+            a=$([ "${conversas:-0}" -gt 0 ] && echo 1 || echo 0)
+          fi
+          algum=$(( m | c | mf | p | d | a ))
+          { echo "media=$m"; echo "comunidade=$c"; echo "manifesto=$mf"; echo "pesquisa=$p"
+            echo "dna=$(( d | m ))"; echo "atendimento=$a"; echo "algum=$algum"; } >> "$GITHUB_OUTPUT"
+          echo "midia=$m comunidade=$c manifesto=$mf pesquisa=$p dna=$d atendimento=$a"
+          [ "$algum" = "0" ] && echo "nada para fazer — encerrando sem instalar nada"
+          exit 0
+
       - uses: actions/checkout@v4
+        if: steps.fila.outputs.algum == '1'
 
       - uses: actions/setup-python@v5
+        if: steps.fila.outputs.algum == '1'
         with:
           python-version: '3.12'
           cache: pip
 
       - name: Instalar ffmpeg
+        if: steps.fila.outputs.media == '1'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
 
       # Desde nov/2025 o yt-dlp precisa de um interpretador JavaScript (Deno)
       # para resolver o desafio do YouTube; sem ele o download falha.
       - uses: denoland/setup-deno@v2
+        if: steps.fila.outputs.media == '1'
         with:
           deno-version: v2.x
 
       - name: Instalar dependencias
+        if: steps.fila.outputs.algum == '1'
         # yt-dlp sempre na versao mais nova: o YouTube muda e versao antiga
         # para de baixar ate ser atualizada. [default] traz o yt-dlp-ejs.
         run: |
@@ -44,6 +89,7 @@ jobs:
 
       # Guarda o modelo do Whisper entre execucoes (evita baixar 140MB toda vez)
       - uses: actions/cache@v4
+        if: steps.fila.outputs.media == '1'
         with:
           path: |
             ~/.cache/huggingface
@@ -51,6 +97,7 @@ jobs:
           key: modelos-whisper-small-argos-v1
 
       - name: 1. Baixar e transcrever
+        if: steps.fila.outputs.media == '1'
         working-directory: worker
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -62,7 +109,7 @@ jobs:
 
       # Roda mesmo se o passo anterior nao achou nada na fila
       - name: 2. Estrategia de comunidade
-        if: always()
+        if: always() && steps.fila.outputs.comunidade == '1'
         working-directory: worker
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -74,7 +121,7 @@ jobs:
       # O community.py enfileirava esta tarefa desde o comeco e ninguem a
       # consumia — ficava parada na fila para sempre.
       - name: 3. Manifesto da comunidade
-        if: always()
+        if: always() && steps.fila.outputs.manifesto == '1'
         working-directory: worker
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -87,7 +134,7 @@ jobs:
       # e guarda. Marcar o que e dor ou objecao continua sendo trabalho de
       # pessoa, na tela de Fontes.
       - name: 4. Coletar pesquisa (YouTube / Reddit)
-        if: always()
+        if: always() && steps.fila.outputs.pesquisa == '1'
         working-directory: worker
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -102,7 +149,7 @@ jobs:
       # uma em research_source com as frases exatas. E o que faz 100
       # conversas por dia virarem 5 para a dona olhar.
       - name: 5. Atendimento — classificar conversas
-        if: always()
+        if: always() && steps.fila.outputs.atendimento == '1'
         # Sem a tabela de conversas (sql/atendimento.sql nao rodado), este passo
         # falha. Nao pode pintar o motor inteiro de vermelho nem esconder se a
         # analise de conteudo, que vem depois, deu certo.
@@ -116,7 +163,8 @@ jobs:
         run: python atendimento.py
 
       - name: 6. Analisar o conteudo
-        if: always()
+        # dna=1 também quando houve mídia: o passo 1 enfileira a análise
+        if: always() && steps.fila.outputs.dna == '1'
         working-directory: worker
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -124,3 +172,22 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           WHEFF_ORG: wheff
         run: python dna_analyze.py
+
+      # Mede o uso (Fase 7): cada passagem vira um registro no diário
+      # (events, tipo motor.execucao) com a duração e se teve trabalho. A tela
+      # Motor e fila da plataforma soma os minutos. Repositório público: os
+      # minutos do GitHub Actions não são cobrados, mas ficam visíveis.
+      - name: Registrar execução
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          inicio="${{ steps.fila.outputs.inicio }}"; dur=$(( $(date +%s) - ${inicio:-$(date +%s)} ))
+          corpo=$(jq -nc --arg wf "media" --arg st "${{ job.status }}" --arg run "${{ github.run_id }}" \
+            --arg ev "${{ github.event_name }}" --argjson dur "$dur" --argjson tem "${{ steps.fila.outputs.algum || 1 }}" \
+            '{org_id:"wheff", event_type:"motor.execucao", actor_type:"system", actor_id:"github-actions",
+              payload:{workflow:$wf, duracao_s:$dur, teve_trabalho:($tem==1), resultado:$st, run_id:$run, gatilho:$ev}}')
+          curl -sS -o /dev/null -w "registro: %{http_code}\n" -X POST "${SUPABASE_URL%/}/rest/v1/events" \
+            -H "apikey: ${SUPABASE_SERVICE_KEY}" -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
+            -H "Content-Type: application/json" -d "$corpo" || true

@@ -281,6 +281,7 @@ def processar(job):
     formato = Path(nome).suffix.lstrip(".").lower() or "pdf"
     print(f"  lendo {nome} ({formato}) de {BUCKET}/{caminho}")
 
+    wheff.etapa(ORG, job["id"], "baixando o arquivo", minutos=45)
     dados_brutos = baixar(caminho)
     print(f"  baixado: {len(dados_brutos) / 1_048_576:.1f} MB")
 
@@ -303,10 +304,12 @@ def processar(job):
                   f"(paginas {inicio} a {fim - 1})")
             alvo = recortar(local, inicio, fim, Path(tmp) / f"parte-{n}.pdf")
 
+        wheff.etapa(ORG, job["id"], "convertendo" + (f" (parte {parte['n']} de {parte['de']})" if parte else ""), minutos=45)
         md, avisos, n_tabelas, paginas = converter(alvo)
 
     print(f"  extraido: {len(md)} caracteres, {n_tabelas} tabelas")
 
+    wheff.etapa(ORG, job["id"], "montando o mapa e os trechos", minutos=30)
     pedacos, com_titulos = fatiar(md, paginas)
     secoes, itens, truncado = montar(pedacos, com_titulos)
     print(f"  mapa: {len(secoes)} secoes | trechos: {len(itens)}"

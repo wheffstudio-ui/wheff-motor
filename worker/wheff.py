@@ -5,7 +5,7 @@ Este arquivo NÃO contém segredo nenhum. As chaves chegam por variável de
 ambiente, vindas dos GitHub Secrets. Nunca escreva chave aqui dentro.
 """
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -61,6 +61,21 @@ def buscar_artefato(artifact_id):
     r = _check(requests.get(
         f"{URL}/rest/v1/artifacts?id=eq.{artifact_id}&select=*",
         headers=H, timeout=30), "buscar artefato")
+    linhas = r.json()
+    return linhas[0] if linhas else None
+
+
+def buscar_por_hash(org, tipo, content_hash):
+    """
+    A peça que já existe com esta impressão digital (o mesmo arquivo).
+    Reprocessar uma tarefa que morreu no meio reaproveita o que ficou pronto
+    em vez de criar outro VIDEO igual. Fase 7, 18/10/2026.
+    """
+    r = _check(requests.get(
+        f"{URL}/rest/v1/artifacts?org_id=eq.{org}&type=eq.{tipo}"
+        f"&content_hash=eq.{content_hash}&is_current=is.true&select=*"
+        f"&order=created_at.asc&limit=1",
+        headers=H, timeout=30), "buscar por impressão digital")
     linhas = r.json()
     return linhas[0] if linhas else None
 
@@ -133,9 +148,12 @@ def criar_artefato(org, tipo, nivel, schema, dados, criado_por,
 
 
 def ligar(org, de, para, relacao, metadata=None):
-    """Genealogia: 'de' veio de 'para'. Ex.: VIDEO derived_from SOURCE."""
+    """Genealogia: 'de' veio de 'para'. Ex.: VIDEO derived_from SOURCE.
+    Ligação repetida (reprocessamento) é ignorada, não dá erro."""
+    h = dict(H); h["Prefer"] = "resolution=ignore-duplicates"
     _check(requests.post(
-        f"{URL}/rest/v1/artifact_links", headers=H, timeout=30,
+        f"{URL}/rest/v1/artifact_links?on_conflict=from_artifact_id,to_artifact_id,relation",
+        headers=h, timeout=30,
         json={"org_id": org,
               "from_artifact_id": de["id"],   "from_version": de["version"],
               "to_artifact_id":   para["id"], "to_version":   para["version"],
@@ -172,21 +190,61 @@ def enfileirar(org, tipo, payload, idempotency_key, prioridade=100):
     return criado[0] if criado else None
 
 
-def terminar_job(org, job_id, erro=None):
-    """Fecha a tarefa. Sem erro = pronto; com erro = volta para a fila."""
+def espera_minutos(tentativas):
+    """Espera antes da próxima tentativa: 2, 4, 8, 16… minutos (teto 6 h)."""
+    return min(2 ** max(1, int(tentativas or 1)) , 360)
+
+
+def terminar_job(org, job_id, erro=None, definitivo=False):
+    """
+    Fecha a tarefa.
+    • Sem erro: pronta.
+    • Com erro: volta para a fila COM espera (2, 4, 8 min…). Esgotadas as
+      tentativas — ou erro definitivo, como vídeo privado — fica FAILED e
+      para de gastar execução. Antes de 18/10/2026 voltava para a fila na
+      hora e sem limite: uma tarefa quebrada tentava a cada 10 min para sempre.
+    """
+    agora = datetime.now(timezone.utc)
     if erro is None:
-        corpo = {"status": "COMPLETED",
-                 "completed_at": datetime.now(timezone.utc).isoformat(),
+        corpo = {"status": "COMPLETED", "completed_at": agora.isoformat(),
                  "lease_expires_at": None}
         evento = "job.completed"
     else:
-        # Devolve para a fila. Se estourar as tentativas, o claim_job
-        # marca como FAILED na próxima passagem.
-        corpo = {"status": "QUEUED", "claimed_by": None, "claimed_at": None,
-                 "lease_expires_at": None, "last_error": str(erro)[:2000]}
-        evento = "job.failed"
+        r = _check(requests.get(
+            f"{URL}/rest/v1/jobs?id=eq.{job_id}&select=attempts,max_attempts",
+            headers=H, timeout=30), "ler tentativas")
+        linha = (r.json() or [{}])[0]
+        tent, maximo = int(linha.get("attempts") or 0), int(linha.get("max_attempts") or 3)
+        acabou = definitivo or tent >= maximo
+        corpo = {"claimed_by": None, "claimed_at": None, "lease_expires_at": None,
+                 "last_error": str(erro)[:2000]}
+        if acabou:
+            corpo["status"] = "FAILED"
+        else:
+            corpo["status"] = "QUEUED"
+            corpo["available_at"] = (agora + timedelta(minutes=espera_minutos(tent))).isoformat()
+        evento = "job.failed" if acabou else "job.retry"
 
     _check(requests.patch(f"{URL}/rest/v1/jobs?id=eq.{job_id}",
                           headers=H, json=corpo, timeout=30), "terminar job")
     registrar_evento(org, evento, job_id=job_id, actor_type="worker",
-                     payload={"erro": str(erro)[:500]} if erro else {})
+                     payload={"erro": str(erro)[:500], "definitivo": bool(definitivo)} if erro else {})
+    return corpo["status"]
+
+
+def etapa(org, job_id, nome, minutos=30):
+    """
+    Batimento + etapa. Renova a reserva da tarefa (quem morrer no meio volta
+    para a fila quando a reserva vencer) e registra em que passo está, com
+    horário, no diário (events). A plataforma mostra a última etapa.
+    Falhar aqui não derruba a tarefa: é registro, não trabalho.
+    """
+    try:
+        lease = (datetime.now(timezone.utc) + timedelta(minutes=minutos)).isoformat()
+        requests.patch(f"{URL}/rest/v1/jobs?id=eq.{job_id}&status=eq.RUNNING",
+                       headers=H, json={"lease_expires_at": lease}, timeout=30)
+        registrar_evento(org, "job.stage", job_id=job_id, actor_type="worker",
+                         payload={"etapa": nome})
+        print(f"  · {nome}")
+    except Exception as e:  # noqa: BLE001
+        print(f"  (não registrei a etapa '{nome}': {e})")

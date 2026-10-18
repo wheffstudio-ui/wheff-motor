@@ -34,16 +34,20 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
           set -euo pipefail
+          echo "inicio=$(date +%s)" >> "$GITHUB_OUTPUT"
+          agora=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          # Fase 7: tarefa em espera entre tentativas não conta; travada com
+          # reserva vencida conta (o claim_job a recupera).
           resposta=$(curl -sS \
             -H "apikey: ${SUPABASE_SERVICE_KEY}" \
             -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
-            "${SUPABASE_URL%/}/rest/v1/jobs?job_type=eq.doc.ingest&status=eq.QUEUED&select=id&limit=1")
+            "${SUPABASE_URL%/}/rest/v1/jobs?job_type=eq.doc.ingest&select=id&limit=1&or=(and(status.eq.QUEUED,available_at.lte.$agora),and(status.eq.RUNNING,lease_expires_at.lt.$agora))")
           # Resposta vazia da API é "[]". Qualquer id dentro significa trabalho.
           if echo "$resposta" | grep -q '"id"'; then
-            echo "tem=1" >> "$GITHUB_OUTPUT"
+            echo "tem=1" >> "$GITHUB_OUTPUT"; echo "algum=1" >> "$GITHUB_OUTPUT"
             echo "ha documento na fila — seguindo para a leitura"
           else
-            echo "tem=0" >> "$GITHUB_OUTPUT"
+            echo "tem=0" >> "$GITHUB_OUTPUT"; echo "algum=0" >> "$GITHUB_OUTPUT"
             echo "fila vazia — encerrando sem instalar nada"
           fi
 
@@ -80,3 +84,22 @@ jobs:
           WHEFF_ORG: wheff
           WHEFF_BUCKET: documentos
         run: python docs_ingest.py
+
+      # Mede o uso (Fase 7): cada passagem vira um registro no diário
+      # (events, tipo motor.execucao) com a duração e se teve trabalho. A tela
+      # Motor e fila da plataforma soma os minutos. Repositório público: os
+      # minutos do GitHub Actions não são cobrados, mas ficam visíveis.
+      - name: Registrar execução
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          inicio="${{ steps.fila.outputs.inicio }}"; dur=$(( $(date +%s) - ${inicio:-$(date +%s)} ))
+          corpo=$(jq -nc --arg wf "docs" --arg st "${{ job.status }}" --arg run "${{ github.run_id }}" \
+            --arg ev "${{ github.event_name }}" --argjson dur "$dur" --argjson tem "${{ steps.fila.outputs.algum || 1 }}" \
+            '{org_id:"wheff", event_type:"motor.execucao", actor_type:"system", actor_id:"github-actions",
+              payload:{workflow:$wf, duracao_s:$dur, teve_trabalho:($tem==1), resultado:$st, run_id:$run, gatilho:$ev}}')
+          curl -sS -o /dev/null -w "registro: %{http_code}\n" -X POST "${SUPABASE_URL%/}/rest/v1/events" \
+            -H "apikey: ${SUPABASE_SERVICE_KEY}" -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
+            -H "Content-Type: application/json" -d "$corpo" || true

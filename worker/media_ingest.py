@@ -21,6 +21,15 @@ ORG = os.environ.get("WHEFF_ORG", "wheff")
 WORKER = f"gh-actions/{os.environ.get('GITHUB_RUN_ID', 'local')}"
 MODELO = os.environ.get("WHISPER_MODEL", "base")
 
+# Marca no começo do erro: a plataforma reconhece e oferece colar a
+# transcrição no lugar do download (Fase 7).
+MARCA_INDISPONIVEL = "[download indisponível]"
+
+
+class DownloadIndisponivel(RuntimeError):
+    """Download que não vai dar certo tentando de novo daqui a minutos:
+    vídeo privado, removido, que exige login, ou servidor bloqueado."""
+
 
 def baixar(url, pasta):
     """yt-dlp: metadados + arquivo de áudio."""
@@ -45,7 +54,7 @@ def baixar(url, pasta):
         linhas = [l for l in (r.stderr or "").splitlines() if l.strip()]
         motivo = " | ".join(linhas[-3:])[:600] or "sem mensagem do yt-dlp"
         if "confirm you" in motivo.lower() or "not a bot" in motivo.lower():
-            raise RuntimeError("O YouTube bloqueou o download vindo do servidor do GitHub "
+            raise DownloadIndisponivel(MARCA_INDISPONIVEL + " O YouTube bloqueou o download vindo do servidor do GitHub "
                                "(pede para confirmar que nao e robo). "
                                + ("Os cookies configurados nao foram aceitos — exporte de novo. " if cookies
                                   else "Configure o segredo YTDLP_COOKIES ou use link do TikTok/Instagram. ")
@@ -54,7 +63,10 @@ def baixar(url, pasta):
             raise RuntimeError("O YouTube recusou a sessao vinda do servidor (pede para recarregar a pagina). "
                                "Cookies vencidos ou bloqueio do servidor do GitHub. " + motivo)
         if "private" in motivo.lower() or "age" in motivo.lower() or "sign in" in motivo.lower():
-            raise RuntimeError("Video privado, restrito por idade ou que exige login. " + motivo)
+            raise DownloadIndisponivel(MARCA_INDISPONIVEL + " Video privado, restrito por idade ou que exige login. " + motivo)
+        if any(x in motivo.lower() for x in ("video unavailable", "has been removed", "no longer available",
+                                             "does not exist", "http error 404", "not available in your country")):
+            raise DownloadIndisponivel(MARCA_INDISPONIVEL + " O post foi removido ou nao esta disponivel. " + motivo)
         raise RuntimeError("yt-dlp nao conseguiu baixar: " + motivo)
     info_path = next((os.path.join(pasta, f) for f in os.listdir(pasta)
                       if f.endswith(".info.json")), None)
@@ -90,8 +102,10 @@ def transcrever(caminho):
 def executar(job):
     url = job["payload"]["url"]
     source_id = job["payload"].get("source_artifact_id")
+    jid = job["id"]
 
     with tempfile.TemporaryDirectory() as pasta:
+        wheff.etapa(ORG, jid, "baixando")
         info, midia = baixar(url, pasta)
 
         # Impressão digital do conteúdo: mesmo vídeo não reprocessa.
@@ -101,39 +115,56 @@ def executar(job):
                 h.update(bloco)
         content_hash = h.hexdigest()
 
-        video = wheff.criar_artefato(
-            ORG, "video", "OBSERVED", "video:v1", escopo="SHARED",
-            content_hash=content_hash, criado_por=f"worker:media/{WORKER}",
-            dados={
-                "url": url,
-                "plataforma": info.get("extractor_key", "").lower(),
-                "titulo": info.get("title"),
-                "autor": info.get("uploader") or info.get("channel"),
-                "duracao": info.get("duration"),
-                "legenda": info.get("description"),
-                "curtidas": info.get("like_count"),
-                "comentarios": info.get("comment_count"),
-                "visualizacoes": info.get("view_count"),
-                "publicado_em": info.get("upload_date"),
-            })
-        print(f"  criado {video['artifact_key']}")
+        # Reprocessamento: se uma tentativa anterior já criou o VIDEO deste
+        # mesmo arquivo, reaproveita (e o que derivou dele) em vez de duplicar.
+        video = wheff.buscar_por_hash(ORG, "video", content_hash)
+        if video:
+            print(f"  reaproveitado {video['artifact_key']} (mesmo arquivo)")
+        else:
+            video = wheff.criar_artefato(
+                ORG, "video", "OBSERVED", "video:v1", escopo="SHARED",
+                content_hash=content_hash, criado_por=f"worker:media/{WORKER}",
+                dados={
+                    "url": url,
+                    "plataforma": info.get("extractor_key", "").lower(),
+                    "titulo": info.get("title"),
+                    "autor": info.get("uploader") or info.get("channel"),
+                    "duracao": info.get("duration"),
+                    "legenda": info.get("description"),
+                    "curtidas": info.get("like_count"),
+                    "comentarios": info.get("comment_count"),
+                    "visualizacoes": info.get("view_count"),
+                    "publicado_em": info.get("upload_date"),
+                })
+            print(f"  criado {video['artifact_key']}")
 
         if source_id:
             wheff.ligar(ORG, video, {"id": source_id, "version": 1}, "derived_from")
 
-        t = transcrever(midia)
-        transcript = wheff.criar_artefato(
-            ORG, "transcript", "OBSERVED", "transcript:v1", escopo="SHARED",
-            criado_por=f"worker:whisper/{WORKER}", dados=t,
-            snapshot={"modelo": t["modelo"]})
-        wheff.ligar(ORG, transcript, video, "derived_from")
-        print(f"  criado {transcript['artifact_key']} "
-              f"({t['idioma']}, {len(t['trechos'])} trechos, {t['duracao']}s)")
+        ja_tr = wheff.derivados_de(video["id"], "transcript")
+        if ja_tr:
+            transcript = ja_tr[0]
+            t = transcript["data"]
+            print(f"  reaproveitado {transcript['artifact_key']}")
+        else:
+            wheff.etapa(ORG, jid, "transcrevendo")
+            t = transcrever(midia)
+            transcript = wheff.criar_artefato(
+                ORG, "transcript", "OBSERVED", "transcript:v1", escopo="SHARED",
+                criado_por=f"worker:whisper/{WORKER}", dados=t,
+                snapshot={"modelo": t["modelo"]})
+            wheff.ligar(ORG, transcript, video, "derived_from")
+            print(f"  criado {transcript['artifact_key']} "
+                  f"({t['idioma']}, {len(t['trechos'])} trechos, {t['duracao']}s)")
 
         # Tradução — peça separada, com genealogia própria. Fica claro que é
         # texto de máquina, e qual máquina, e a partir de qual transcrição.
-        traduzidos, via = traducao.traduzir_trechos(
-            t["trechos"], t["idioma"], caminho_audio=midia, modelo_whisper=MODELO)
+        if wheff.derivados_de(transcript["id"], "translation"):
+            traduzidos, via = None, "já traduzido numa tentativa anterior"
+        else:
+            wheff.etapa(ORG, jid, "traduzindo")
+            traduzidos, via = traducao.traduzir_trechos(
+                t["trechos"], t["idioma"], caminho_audio=midia, modelo_whisper=MODELO)
         if traduzidos:
             trad = wheff.criar_artefato(
                 ORG, "translation", "DERIVED", "translation:v1", escopo="SHARED",
@@ -148,6 +179,7 @@ def executar(job):
             print(f"  sem tradução: {via}")
 
         # Próximo elo. A IA analisa o texto ORIGINAL — nunca a tradução.
+        wheff.etapa(ORG, jid, "enfileirando a análise")
         wheff.enfileirar(ORG, "dna.analyze",
                          {"video_artifact_id": video["id"],
                           "transcript_artifact_id": transcript["id"]},
@@ -174,7 +206,10 @@ def main():
         import re
         curto = re.sub(r"https?://\S+", "[link]", str(e)).replace("\n", " ")[:900]
         print(f"::error title=Baixar e transcrever::{curto}")
-        wheff.terminar_job(ORG, job["id"], erro=e)
+        # Download que não vai dar certo tentando de novo: falha definitiva
+        # (não gasta mais execuções) e a plataforma oferece colar a transcrição.
+        status = wheff.terminar_job(ORG, job["id"], erro=e, definitivo=isinstance(e, DownloadIndisponivel))
+        print(f"  tarefa ficou {status}")
         return 1
 
 
