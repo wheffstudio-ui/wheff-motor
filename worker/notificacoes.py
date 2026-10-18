@@ -1,8 +1,9 @@
 """
 Notificações no celular (item 18 da lista da plataforma).
 
-Todo dia às 8h (Brasília) monta os avisos de cada pessoa e envia por Web Push
-para os aparelhos que ela ativou na plataforma (public.push_inscricoes):
+Todo dia às 8h (Brasília) monta os avisos de cada pessoa da lista de acesso,
+guarda na caixa de avisos da plataforma (public.avisos, o sino) e, para quem
+ativou o celular (public.push_inscricoes), envia também por Web Push:
 
   · só o que é da função dela (área do Perfil -> função, a mesma divisão do
     Guia); a parceira recebe o que ela grava no dia seguinte;
@@ -200,14 +201,45 @@ def resumo_semana(espacos):
     return {"titulo": "Wheff · semana", "corpo": texto, "abrir": "painel", "tag": "wheff-semana"}
 
 
+def pessoas_da_lista():
+    """
+    Todos da lista de acesso (papeis) que já entraram pelo menos uma vez:
+    e-mail -> id do login. Fase 7E: a caixa de avisos vale para todos, com
+    ou sem celular ativado. Sem a lista de usuários (API de administração),
+    volta ao jeito antigo: só quem ativou o celular.
+    """
+    try:
+        r = requests.get(f"{URL}/auth/v1/admin/users", headers=H, params={"per_page": 1000}, timeout=60)
+        r.raise_for_status()
+        usuarios = {str(u.get("email") or "").lower(): u["id"] for u in (r.json().get("users") or []) if u.get("email")}
+    except Exception as e:  # noqa: BLE001
+        print(f"  não li a lista de usuários ({str(e)[:100]}) — só quem ativou o celular")
+        return None
+    return usuarios
+
+
+def gravar_caixa(email, avisos, push, quando=None):
+    """Guarda na caixa de avisos (sql/avisos.sql). Mesma chave não repete."""
+    if not avisos or not email:
+        return True
+    linhas = [{"email": email, "chave": a["chave"], "tipo": a.get("tipo", ""), "texto": a["texto"],
+               "abrir": a.get("abrir", ""), "push": push, "push_em": quando} for a in avisos]
+    r = requests.post(f"{URL}/rest/v1/avisos?on_conflict=email,chave", data=json.dumps(linhas), timeout=60,
+                      headers={**H, "Prefer": "resolution=ignore-duplicates"})
+    if r.status_code in (400, 404):
+        print("  caixa de avisos ainda não existe (rode sql/avisos.sql) — seguindo só com o celular")
+        return False
+    r.raise_for_status()
+    return True
+
+
 def main():
     inscricoes = ler("push_inscricoes")
-    if not inscricoes:
-        print("Nenhum aparelho ativado ainda — nada a enviar.")
-        return
     print(f"{len(inscricoes)} aparelho(s) ativado(s)")
 
     if TESTE:
+        if not inscricoes:
+            print("Nenhum aparelho ativado — o teste é só de celular.")
         for i in inscricoes:
             ok = enviar(i, {"titulo": "Wheff · teste", "corpo": "As notificações estão funcionando. Toque para abrir.",
                             "abrir": "notificacoes", "tag": "wheff-teste"})
@@ -220,16 +252,27 @@ def main():
     por_espaco = {mid: avisos_do_espaco(d) for mid, d in espacos.items()}
     do_motor = avisos_do_motor()
 
-    # Limpa o registro de avisos com mais de 60 dias (não volta a avisar o que já passou)
+    # Limpa o registro de push com mais de 60 dias (não volta a avisar o que já passou)
     apagar("push_avisos", {"enviado_em": f"lt.{(AGORA - dt.timedelta(days=60)).isoformat()}"})
 
-    por_pessoa = {}
+    aparelhos_de = {}
     for i in inscricoes:
-        por_pessoa.setdefault(i["user_id"], []).append(i)
+        aparelhos_de.setdefault(str(i.get("email") or "").lower(), []).append(i)
 
-    for uid, aparelhos in por_pessoa.items():
-        email = str(aparelhos[0].get("email") or "").lower()
+    # Quem recebe: todos da lista (caixa interna) — ou, sem a lista de
+    # usuários, só quem tem aparelho (comportamento anterior)
+    usuarios = pessoas_da_lista()
+    if usuarios is None:
+        destinatarios = {e: aps[0]["user_id"] for e, aps in aparelhos_de.items() if e}
+    else:
+        destinatarios = {e: usuarios[e] for e in papeis if e in usuarios}
+        for e, aps in aparelhos_de.items():          # quem tem aparelho e não está na lista (antigo)
+            destinatarios.setdefault(e, aps[0]["user_id"])
+    caixa_ok = True
+
+    for email, uid in destinatarios.items():
         papel = papeis.get(email, {})
+        aparelhos = aparelhos_de.get(email, [])
         if papel.get("papel") == "produtora":
             avisos = [a for a in por_espaco.get(papel.get("marca_id"), []) if a["tipo"] == "grava"]
         else:
@@ -239,6 +282,8 @@ def main():
                      [a for a in do_motor if a["tipo"] in tipos]
 
         ja = {x["chave"] for x in ler("push_avisos", {"select": "chave", "user_id": f"eq.{uid}"})}
+        if caixa_ok:
+            ja |= {x["chave"] for x in ler("avisos", {"select": "chave", "email": f"eq.{email}"}, opcional=True)}
         novos, vistos = [], set()
         for a in sorted(avisos, key=lambda a: -a["peso"]):
             if a["chave"] not in ja and a["chave"] not in vistos:
@@ -246,20 +291,33 @@ def main():
                 vistos.add(a["chave"])
 
         if novos:
-            linhas = [a["texto"] for a in novos[:3]] + ([f"e mais {len(novos) - 3}"] if len(novos) > 3 else [])
-            payload = {"titulo": "Wheff · hoje", "corpo": "\n".join(linhas), "abrir": novos[0]["abrir"], "tag": "wheff-diario"}
-            entregues = sum(enviar(i, payload) for i in aparelhos)
-            if entregues:
-                inserir("push_avisos", [{"user_id": uid, "chave": a["chave"]} for a in novos])
-            print(f"{email or uid}: {len(novos)} aviso(s) novo(s), entregue em {entregues} de {len(aparelhos)} aparelho(s)")
+            status, quando = "sem_aparelho", None
+            if aparelhos:
+                linhas = [a["texto"] for a in novos[:3]] + ([f"e mais {len(novos) - 3}"] if len(novos) > 3 else [])
+                payload = {"titulo": "Wheff · hoje", "corpo": "\n".join(linhas), "abrir": novos[0]["abrir"], "tag": "wheff-diario"}
+                entregues = sum(enviar(i, payload) for i in aparelhos)
+                status, quando = ("enviado" if entregues else "falhou"), AGORA.isoformat()
+                if entregues:
+                    inserir("push_avisos", [{"user_id": uid, "chave": a["chave"]} for a in novos])
+            if caixa_ok:
+                caixa_ok = gravar_caixa(email, novos, status, quando)
+            print(f"{email}: {len(novos)} aviso(s) novo(s) — celular: {status}")
         else:
-            print(f"{email or uid}: nada novo hoje")
+            print(f"{email}: nada novo hoje")
 
         # Segunda-feira: resumo da semana para a equipe (uma vez por semana)
         if AGORA.weekday() == 0 and papel.get("papel") != "produtora" and f"semana:{SEMANA}" not in ja:
-            if sum(enviar(i, resumo_semana(espacos)) for i in aparelhos):
-                inserir("push_avisos", [{"user_id": uid, "chave": f"semana:{SEMANA}"}])
-                print("  resumo da semana enviado")
+            resumo = resumo_semana(espacos)
+            status, quando = "sem_aparelho", None
+            if aparelhos:
+                ok = sum(enviar(i, resumo) for i in aparelhos)
+                status, quando = ("enviado" if ok else "falhou"), AGORA.isoformat()
+                if ok:
+                    inserir("push_avisos", [{"user_id": uid, "chave": f"semana:{SEMANA}"}])
+            if caixa_ok:
+                caixa_ok = gravar_caixa(email, [{"chave": f"semana:{SEMANA}", "tipo": "semana", "texto": resumo["corpo"],
+                                                  "abrir": resumo["abrir"]}], status, quando)
+            print(f"  resumo da semana — celular: {status}")
 
 
 if __name__ == "__main__":
