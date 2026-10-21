@@ -1,0 +1,69 @@
+name: Conectores
+
+# Fase 6: lê Meta Ads, Google Ads (com recorte do YouTube), GA4 e TikTok Ads
+# com os segredos guardados aqui no GitHub, e grava no banco da plataforma.
+# Sem nenhum segredo de conector, encerra no primeiro passo (sem instalar nada).
+on:
+  schedule:
+    - cron: '0 9 * * *'      # 6h em Brasília
+  workflow_dispatch:
+
+concurrency:
+  group: conectores
+  cancel-in-progress: false
+
+jobs:
+  sincronizar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      META_ADS_TOKEN: ${{ secrets.META_ADS_TOKEN }}
+      META_ADS_CONTAS: ${{ secrets.META_ADS_CONTAS }}
+      META_CONVERSAO: ${{ secrets.META_CONVERSAO }}
+      GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+      GOOGLE_OAUTH_REFRESH_TOKEN: ${{ secrets.GOOGLE_OAUTH_REFRESH_TOKEN }}
+      GOOGLE_ADS_DEVELOPER_TOKEN: ${{ secrets.GOOGLE_ADS_DEVELOPER_TOKEN }}
+      GOOGLE_ADS_CUSTOMER_IDS: ${{ secrets.GOOGLE_ADS_CUSTOMER_IDS }}
+      GOOGLE_ADS_LOGIN_CUSTOMER_ID: ${{ secrets.GOOGLE_ADS_LOGIN_CUSTOMER_ID }}
+      GA4_PROPERTY_ID: ${{ secrets.GA4_PROPERTY_ID }}
+      TIKTOK_ADS_TOKEN: ${{ secrets.TIKTOK_ADS_TOKEN }}
+      TIKTOK_ADVERTISER_IDS: ${{ secrets.TIKTOK_ADVERTISER_IDS }}
+    steps:
+      - name: Tem conector configurado?
+        id: fila
+        run: |
+          echo "inicio=$(date +%s)" >> "$GITHUB_OUTPUT"
+          if [ -n "$META_ADS_TOKEN$GOOGLE_OAUTH_REFRESH_TOKEN$TIKTOK_ADS_TOKEN" ]; then
+            echo "algum=1" >> "$GITHUB_OUTPUT"; echo "há conector configurado"
+          else
+            echo "algum=0" >> "$GITHUB_OUTPUT"; echo "nenhum segredo de conector — encerrando"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.fila.outputs.algum == '1'
+
+      - uses: actions/setup-python@v5
+        if: steps.fila.outputs.algum == '1'
+        with:
+          python-version: '3.12'
+
+      - name: Sincronizar
+        if: steps.fila.outputs.algum == '1'
+        working-directory: worker
+        run: |
+          pip install -q requests
+          python conectores_sync.py
+
+      - name: Registrar execução
+        if: always() && steps.fila.outputs.algum == '1'
+        run: |
+          inicio="${{ steps.fila.outputs.inicio }}"; dur=$(( $(date +%s) - ${inicio:-$(date +%s)} ))
+          corpo=$(jq -nc --arg st "${{ job.status }}" --arg run "${{ github.run_id }}" --argjson dur "$dur" \
+            '{org_id:"wheff", event_type:"motor.execucao", actor_type:"system", actor_id:"github-actions",
+              payload:{workflow:"conectores", duracao_s:$dur, teve_trabalho:true, resultado:$st, run_id:$run}}')
+          curl -sS -o /dev/null -X POST "${SUPABASE_URL%/}/rest/v1/events" \
+            -H "apikey: ${SUPABASE_SERVICE_KEY}" -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
+            -H "Content-Type: application/json" -d "$corpo" || true
