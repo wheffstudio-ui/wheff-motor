@@ -44,7 +44,7 @@ DA_AREA = {
     "Coprodução / TI": "coprodutora", "Edição de Vídeos": "editora", "Design de Posts": "designer",
     "Identidade Visual (Marca)": "designer", "Gestão de Tráfego Pago e Orgânico": "trafego",
 }
-TODOS = {"atraso", "meta", "roteiro", "producao", "aprovacao"}
+TODOS = {"atraso", "meta", "roteiro", "producao", "aprovacao", "briefing"}
 POR_FUNCAO = {
     "coprodutora": TODOS, "estrategista": TODOS,
     "trafego": {"atraso", "meta"}, "otimizadora": {"atraso", "meta"},
@@ -139,6 +139,27 @@ def avisos_do_espaco(dados):
         if a.get("decisao") == "pendente" and str(a.get("solicitadoEm") or "")[:10] <= HA_2_DIAS:
             rot = (a.get("objeto") or {}).get("rotulo") or "item"
             add("aprovacao", f"aprov:{a.get('id')}", f"Esperando sua decisão há mais de 2 dias: {rot}", "aprovacoes", 2)
+
+    # W5 — briefing matinal (11/11/2026): liga em Integrações → Automações da
+    # plataforma. Só o que está cadastrado para hoje; nada estimado.
+    if (((dados.get("settings") or {}).get("automacoes") or {}).get("ligado") or {}).get("w5"):
+        partes = []
+        fases = [f"{l.get('nome') or 'lançamento'}: {ROT_FASE.get(fa.get('phaseId'), fa.get('phaseId'))}"
+                 for l in dados.get("lancamentos") or [] if l.get("status") != "encerrado"
+                 for fa in l.get("fases") or []
+                 if fa.get("status") != "done" and (fa.get("startDate") or "") <= HOJE <= (fa.get("endDate") or "")]
+        if fases:
+            partes.append("no lançamento, " + "; ".join(fases[:3]))
+        posts = [e for e in dados.get("events") or [] if e.get("date") == HOJE and e.get("status") != "done"]
+        if posts:
+            partes.append(f"{len(posts)} {'conteúdo' if len(posts) == 1 else 'conteúdos'} para hoje")
+        rec = [t for t in ((dados.get("financeiro") or {}).get("transacoes") or [])
+               if t.get("tipo") == "receita" and t.get("data") == HOJE]
+        if rec:
+            total = sum(float(t.get("valor") or 0) for t in rec)
+            partes.append(f"receitas do dia R$ {total:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        if partes:
+            add("briefing", f"briefing:{HOJE}", "Hoje: " + " · ".join(partes), "dashboard", 4)
     return out
 
 

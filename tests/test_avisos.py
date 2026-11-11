@@ -136,3 +136,19 @@ class TestCaixa(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TesteBriefingW5(unittest.TestCase):
+    """W5: o briefing só aparece ligado e só com o que está cadastrado para hoje."""
+    def test_briefing(self):
+        import notificacoes as n
+        hoje = n.HOJE
+        dados = {"events": [{"id": "e", "date": hoje, "title": "Post"}],
+                 "financeiro": {"transacoes": [{"tipo": "receita", "data": hoje, "valor": 1500}]}}
+        self.assertFalse([a for a in n.avisos_do_espaco(dados) if a["tipo"] == "briefing"])
+        dados["settings"] = {"automacoes": {"ligado": {"w5": True}}}
+        b = [a for a in n.avisos_do_espaco(dados) if a["tipo"] == "briefing"]
+        self.assertEqual(len(b), 1)
+        self.assertIn("1 conteúdo para hoje", b[0]["texto"])
+        self.assertIn("R$ 1.500,00", b[0]["texto"])
+        self.assertFalse([a for a in n.avisos_do_espaco({"settings": dados["settings"]}) if a["tipo"] == "briefing"])
