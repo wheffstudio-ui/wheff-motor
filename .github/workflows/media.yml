@@ -45,16 +45,16 @@ jobs:
           tem() { echo "$tipos" | grep -qE "$1" && echo 1 || echo 0; }
           if [ "$tipos" = "ERRO" ]; then
             # Não consegui perguntar: roda tudo, como antes (melhor gastar do que perder trabalho)
-            m=1; c=1; mf=1; p=1; d=1; a=1
+            m=1; c=1; mf=1; p=1; d=1; a=1; t=1
             echo "::warning title=Porteiro::nao consegui consultar a fila — rodando todos os passos"
           else
             m=$(tem '^media\.ingest$'); c=$(tem '^community\.dna$'); mf=$(tem '^community\.manifesto$')
-            p=$(tem '^research\.'); d=$(tem '^dna\.analyze$')
+            p=$(tem '^research\.'); d=$(tem '^dna\.analyze$'); t=$(tem '^time\.run$')
             a=$([ "${conversas:-0}" -gt 0 ] && echo 1 || echo 0)
           fi
-          algum=$(( m | c | mf | p | d | a ))
+          algum=$(( m | c | mf | p | d | a | t ))
           { echo "media=$m"; echo "comunidade=$c"; echo "manifesto=$mf"; echo "pesquisa=$p"
-            echo "dna=$(( d | m ))"; echo "atendimento=$a"; echo "algum=$algum"; } >> "$GITHUB_OUTPUT"
+            echo "dna=$(( d | m ))"; echo "atendimento=$a"; echo "times=$t"; echo "algum=$algum"; } >> "$GITHUB_OUTPUT"
           echo "midia=$m comunidade=$c manifesto=$mf pesquisa=$p dna=$d atendimento=$a"
           [ "$algum" = "0" ] && echo "nada para fazer — encerrando sem instalar nada"
           exit 0
@@ -117,6 +117,18 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           WHEFF_ORG: wheff
         run: python community.py
+
+      # Times de agentes (worker/times.py): um executor para os times que
+      # seguem playbook. Gera para aprovação; nada entra em uso sozinho.
+      - name: 2b. Times de agentes
+        if: always() && steps.fila.outputs.times == '1'
+        working-directory: worker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          WHEFF_ORG: wheff
+        run: python times.py
 
       # O community.py enfileirava esta tarefa desde o comeco e ninguem a
       # consumia — ficava parada na fila para sempre.
