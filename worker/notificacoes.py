@@ -44,12 +44,12 @@ DA_AREA = {
     "Coprodução / TI": "coprodutora", "Edição de Vídeos": "editora", "Design de Posts": "designer",
     "Identidade Visual (Marca)": "designer", "Gestão de Tráfego Pago e Orgânico": "trafego",
 }
-TODOS = {"atraso", "meta", "roteiro", "producao", "aprovacao", "briefing"}
+TODOS = {"atraso", "meta", "roteiro", "producao", "aprovacao", "briefing", "vigia"}
 POR_FUNCAO = {
     "coprodutora": TODOS, "estrategista": TODOS,
-    "trafego": {"atraso", "meta"}, "otimizadora": {"atraso", "meta"},
+    "trafego": {"atraso", "meta", "vigia"}, "otimizadora": {"atraso", "meta", "vigia"},
     "designer": {"roteiro", "producao", "aprovacao"}, "editora": {"roteiro", "producao", "aprovacao"},
-    "analista": {"meta", "aprovacao"}, "coletora": {"aprovacao"},
+    "analista": {"meta", "aprovacao"}, "coletora": {"aprovacao", "vigia"},
 }
 ROT_FASE = {"pre": "Pré-lançamento", "captura": "Captação de Leads", "evento": "Evento / CPLs",
             "carrinho": "Abertura de Carrinho", "followup": "Follow-up & Objeções", "pos": "Pós-lançamento"}
@@ -72,6 +72,33 @@ def inserir(tabela, linhas):
     r = requests.post(f"{URL}/rest/v1/{tabela}", headers={**H, "Prefer": "resolution=ignore-duplicates"},
                       data=json.dumps(linhas), timeout=60)
     r.raise_for_status()
+
+
+def upsert(tabela, linha):
+    r = requests.post(f"{URL}/rest/v1/{tabela}", headers={**H, "Prefer": "resolution=merge-duplicates"},
+                      data=json.dumps(linha), timeout=60)
+    r.raise_for_status()
+
+
+def avisos_do_vigia(espacos):
+    """Vigia (worker/vigia.py): só roda se a tabela vigia_estado existir."""
+    import vigia
+    if not any(vigia.alvos_do_espaco(d) for d in espacos.values()):
+        return {}
+    try:
+        linhas = ler("vigia_estado", {"select": "marca_id,url,hash,linhas"})
+    except requests.HTTPError as e:
+        print(f"Vigia parado: falta rodar sql/vigia.sql no Supabase ({e})")
+        return {}
+    estado = {}
+    for l in linhas:
+        estado.setdefault(l["marca_id"], {})[l["url"]] = l
+    out = {}
+    for mid, d in espacos.items():
+        out[mid] = vigia.vigiar(mid, d, estado.get(mid, {}), lambda linha: upsert("vigia_estado", linha), hoje=HOJE)
+        if out[mid]:
+            print(f"Vigia {mid}: {len(out[mid])} mudança(s)")
+    return out
 
 
 def atualizar(tabela, filtro, dados):
@@ -271,6 +298,8 @@ def main():
     papeis = {str(p["email"]).lower(): p for p in ler("papeis", opcional=True)}
     perfis = {p["id"]: p for p in ler("perfis", {"select": "id,area"}, opcional=True)}
     por_espaco = {mid: avisos_do_espaco(d) for mid, d in espacos.items()}
+    for mid, av in avisos_do_vigia(espacos).items():
+        por_espaco.setdefault(mid, []).extend(av)
     do_motor = avisos_do_motor()
 
     # Limpa o registro de push com mais de 60 dias (não volta a avisar o que já passou)
