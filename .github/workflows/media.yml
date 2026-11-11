@@ -43,6 +43,9 @@ jobs:
             "$base/conversas?org_id=eq.wheff&fonte_id=is.null&status=in.(ABERTA,ESPERANDO)&select=id&limit=1" \
             | jq -r 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)
           tem() { echo "$tipos" | grep -qE "$1" && echo 1 || echo 0; }
+          # Aprovação nos últimos 15 min: o disparo automático dos times (worker/times.py) precisa olhar
+          desde=$(date -u -d '-15 min' +%Y-%m-%dT%H:%M:%SZ)
+          aprov=$(curl -sS -H "$h1" -H "$h2"             "$base/events?org_id=eq.wheff&event_type=eq.approval.granted&created_at=gte.$desde&select=id&limit=1"             | jq -r 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)
           if [ "$tipos" = "ERRO" ]; then
             # Não consegui perguntar: roda tudo, como antes (melhor gastar do que perder trabalho)
             m=1; c=1; mf=1; p=1; d=1; a=1; t=1
@@ -50,6 +53,7 @@ jobs:
           else
             m=$(tem '^media\.ingest$'); c=$(tem '^community\.dna$'); mf=$(tem '^community\.manifesto$')
             p=$(tem '^research\.'); d=$(tem '^dna\.analyze$'); t=$(tem '^time\.run$')
+            [ "${aprov:-0}" -gt 0 ] && t=1
             a=$([ "${conversas:-0}" -gt 0 ] && echo 1 || echo 0)
           fi
           algum=$(( m | c | mf | p | d | a | t ))

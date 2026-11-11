@@ -73,5 +73,28 @@ class TesteTimes(unittest.TestCase):
             self.assertGreater(ids.get(cfg["playbook"], 0), 0, tid)
 
 
+
+class TesteDisparo(unittest.TestCase):
+    def test_resolver_poe_so_quem_tem_base_e_nao_repete(self):
+        chaves, postos = set(), []
+        def enf(org, tipo, payload, idempotency_key):
+            if idempotency_key in chaves: return None
+            chaves.add(idempotency_key); return {"id": "j"}
+        buscar = buscar_com(("brand_profile", "audience_profile"))
+        p1 = times.resolver(buscar=buscar, enfileirar=enf)
+        self.assertIn("audience_research", p1); self.assertIn("sales", p1)
+        self.assertNotIn("branding", p1)          # refaz a própria entrada: só no botão
+        self.assertNotIn("trends", p1)            # sem entrada obrigatória: só no botão
+        self.assertNotIn("product", p1)           # falta market_research
+        self.assertEqual(times.resolver(buscar=buscar, enfileirar=enf), [])   # nada novo, nada repete
+
+    def test_big_idea_usa_so_a_etapa_do_playbook_de_copy(self):
+        pb = {"playbook_id": "PLAYBOOK-COPY", "nome": "Copy", "etapas": [
+            {"id": "x", "nome": "Outra", "obrigatoria": True, "perguntas": ["?"]},
+            {"id": "big_ideia", "nome": "Big Ideia", "obrigatoria": True, "perguntas": ["Qual é a big ideia?"]}]}
+        feitas = times.conduzir(pb, times.TIMES["big_idea"], {}, chamar=modelo_que_responde())
+        self.assertEqual([e["id"] for e in feitas], ["big_ideia"])
+
+
 if __name__ == "__main__":
     unittest.main()

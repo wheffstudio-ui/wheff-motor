@@ -52,6 +52,10 @@ TIMES = {
     "paid_traffic":       {"playbook": "PLAYBOOK-ORGANICO",   "exige": ["brand_profile", "audience_profile"], "usa": ["community_dna", "product_offer"], "produz": "traffic_plan"},
     "sales":              {"playbook": "PLAYBOOK-VENDAS",     "exige": ["brand_profile", "audience_profile"], "usa": ["product_offer"], "produz": "sales_playbook", "foco": "vendas"},
     "support":            {"playbook": "PLAYBOOK-VENDAS",     "exige": ["brand_profile"], "usa": ["community_dna", "product_offer"], "produz": "support_playbook", "foco": "suporte e onboarding"},
+    # Big Idea: o método é a etapa "Big Ideia central, narrativa e ângulo único"
+    # do playbook de Copy (decisão da dona: não é playbook separado).
+    "big_idea":           {"playbook": "PLAYBOOK-COPY", "so_etapas": ["big_ideia"], "exige": ["brand_profile", "audience_profile", "community_dna"],
+                           "usa": ["market_research", "product_offer"], "produz": "big_idea"},
     "auto_messages":      {"playbook": "PLAYBOOK-VENDAS",     "exige": ["brand_profile"], "usa": ["community_dna", "product_offer"], "produz": "message_flows",
                            "foco": "roteiros de mensagem para DM e WhatsApp, enviados por uma pessoa (sem automação não oficial)"},
 }
@@ -125,6 +129,8 @@ def montar_entrada(ents, bloco, anteriores):
 # ── Execução ─────────────────────────────────────────────────────────────────
 def conduzir(pb, cfg, ents, chamar=llm.groq):
     etapas_pb = pb.get("etapas") or []
+    if cfg.get("so_etapas"):
+        etapas_pb = [e for e in etapas_pb if e.get("id") in cfg["so_etapas"]]
     if not etapas_pb:
         raise RuntimeError(f"o {pb.get('playbook_id')} não tem etapas: o método ainda não foi escrito")
     feitas = []
@@ -189,7 +195,43 @@ def executar(job, chamar=llm.groq, buscar=wheff.buscar_por_tipo, ler=ler_playboo
     return art
 
 
+# ── Disparo automático (11/11/2026) ──────────────────────────────────────────
+# Liga em A Linha da Operação ("Rodar os times sozinho"). Quando todas as
+# entradas que um time exige estão aprovadas, põe o time na fila UMA vez por
+# combinação de versões: aprovar uma peça nova destrava quem dependia dela, e
+# rodar de novo sem nada novo não duplica. Times sem entrada obrigatória e
+# times que refazem a própria entrada (Branding) só rodam pelo botão.
+def auto_ligado(get=requests.get):
+    r = get(f"{wheff.URL}/rest/v1/plataforma", headers=wheff.H, params={"select": "dados->settings->times_auto"}, timeout=30)
+    if r.status_code >= 300:
+        return False
+    return any(v is True for linha in r.json() for v in linha.values())
+
+
+def chave_auto(tid, ents, cfg):
+    return f"time:auto:{tid}:" + ",".join(f"{t}={ents[t]['id']}v{ents[t]['version']}" for t in sorted(cfg["exige"]))
+
+
+def resolver(buscar=wheff.buscar_por_tipo, enfileirar=wheff.enfileirar):
+    postos = []
+    for tid, cfg in TIMES.items():
+        if not cfg["exige"] or cfg["produz"] in cfg["exige"]:
+            continue
+        ents, falta = entradas(dict(cfg, usa=[]), buscar)
+        if falta:
+            continue
+        if enfileirar(ORG, "time.run", {"time": tid, "auto": True}, idempotency_key=chave_auto(tid, ents, cfg)):
+            postos.append(tid)
+    return postos
+
+
 def main():
+    try:
+        if auto_ligado():
+            postos = resolver()
+            print("Disparo automático: " + (", ".join(postos) if postos else "nada novo para rodar"))
+    except Exception as e:  # noqa: BLE001 — o disparo não pode travar a fila
+        print(f"Disparo automático falhou: {e}", file=sys.stderr)
     feitos = 0
     while feitos < 3:                    # até 3 times por rodada de 10 min
         job = wheff.pegar_job(ORG, WORKER, ["time.run"], minutos=20)
