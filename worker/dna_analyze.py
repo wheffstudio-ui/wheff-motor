@@ -16,6 +16,7 @@ import re
 
 import requests
 
+import video_visual
 import wheff
 
 ORG = os.environ.get("WHEFF_ORG", "wheff")
@@ -231,8 +232,19 @@ def executar(job):
         if not isinstance(dna.get("confidence"), (int, float)):
             dna["confidence"] = 0.5
         dna["idioma_original"] = tr["data"].get("idioma")
-        dna["limitacoes"] = ["Somente áudio analisado. "
-                             "Sem análise visual, de corte ou de texto em tela."]
+        # Visual MEDIDO (sem IA) pelo media.ingest, se o vídeo foi baixado
+        vis = None
+        vid_id = job["payload"].get("video_artifact_id")
+        if vid_id:
+            vv = wheff.derivados_de(vid_id, "video_visual")
+            vis = video_visual.resumo_para_dna(vv[0]["data"]) if vv else None
+        if vis:
+            dna["visual"] = vis
+            dna["limitacoes"] = ["A leitura de IA usa só a fala. O bloco 'visual' é medido por ferramentas "
+                                 "(cortes, texto na tela, rosto), sem interpretar a cena."]
+        else:
+            dna["limitacoes"] = ["Somente áudio analisado. "
+                                 "Sem análise visual, de corte ou de texto em tela."]
         if manual:
             dna["limitacoes"].append("Transcrição enviada pela pessoa (o download não foi possível): "
                                      "sem tempos, então hook e estrutura não têm segundos.")

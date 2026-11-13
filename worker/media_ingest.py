@@ -15,6 +15,7 @@ import sys
 import tempfile
 
 import traducao
+import video_visual
 import wheff
 
 ORG = os.environ.get("WHEFF_ORG", "wheff")
@@ -32,10 +33,11 @@ class DownloadIndisponivel(RuntimeError):
 
 
 def baixar(url, pasta):
-    """yt-dlp: metadados + arquivo de áudio."""
+    """yt-dlp: metadados + vídeo leve (até 480p, com áudio). O Whisper lê o áudio do
+    mesmo arquivo; o vídeo serve para medir cortes, texto na tela e rosto."""
     saida = os.path.join(pasta, "midia")
     cmd = ["yt-dlp", "--no-playlist", "--write-info-json", "--no-warnings",
-           "-f", "bestaudio/best", "-o", saida + ".%(ext)s"]
+           "-f", "bv*[height<=480]+ba/b[height<=480]/bestaudio/best", "--merge-output-format", "mp4", "-o", saida + ".%(ext)s"]
     # O YouTube bloqueia download vindo de servidor do GitHub ("confirm you're
     # not a bot"). Com o segredo YTDLP_COOKIES — cookies de uma conta Google
     # SECUNDARIA, no formato Netscape — o yt-dlp entra como pessoa logada.
@@ -156,6 +158,24 @@ def executar(job):
             wheff.ligar(ORG, transcript, video, "derived_from")
             print(f"  criado {transcript['artifact_key']} "
                   f"({t['idioma']}, {len(t['trechos'])} trechos, {t['duracao']}s)")
+
+        # O que se VÊ (sem IA): cortes, texto na tela, rosto, formato.
+        # Falhar aqui não derruba o resto — a transcrição já vale sozinha.
+        if not wheff.derivados_de(video["id"], "video_visual"):
+            wheff.etapa(ORG, jid, "medindo o visual")
+            try:
+                vis = video_visual.medir(midia)
+            except Exception as e:
+                vis, erro_vis = None, e
+                print(f"  sem medida visual: {e}")
+            if vis:
+                va = wheff.criar_artefato(
+                    ORG, "video_visual", "OBSERVED", "video-visual:v1", escopo="SHARED",
+                    criado_por=f"worker:visual/{WORKER}", dados=vis,
+                    snapshot={"ferramentas": vis["ferramentas"]})
+                wheff.ligar(ORG, va, video, "derived_from")
+                print(f"  criado {va['artifact_key']} ({vis['n_cortes']} cortes, texto no início: "
+                      f"{vis['texto_na_tela_inicio']}, rosto nos 3 s: {vis['rosto_nos_3s']})")
 
         # Tradução — peça separada, com genealogia própria. Fica claro que é
         # texto de máquina, e qual máquina, e a partir de qual transcrição.
