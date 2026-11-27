@@ -192,11 +192,21 @@ def buscar(usuario, links_ficha):
     }
 
 
-def gravar(pedido_id, corpo):
+def gravar(pedido_id, usuario, corpo):
+    """Grava o resultado SÓ no pedido certo: id válido, ainda na fila e do
+    mesmo @ do job (27/11/2026, auditoria item 2). Qualquer conta da equipe
+    pode pôr um job na fila; sem esta conferência, um job com o pedido_id de
+    outra busca sobrescreveria o resultado dela."""
     import wheff
+    if not re.fullmatch(r"[0-9a-fA-F-]{36}", str(pedido_id or "")):
+        raise ValueError("pedido_id inválido")
     corpo["atualizado_em"] = datetime.now(timezone.utc).isoformat()
-    wheff._check(requests.patch(f"{wheff.URL}/rest/v1/parceira_contatos?id=eq.{pedido_id}",
-                                headers=wheff.H, json=corpo, timeout=30), "gravar contatos")
+    r = wheff._check(requests.patch(
+        f"{wheff.URL}/rest/v1/parceira_contatos",
+        params={"id": f"eq.{pedido_id}", "status": "eq.FILA", "usuario": f"eq.{usuario}"},
+        headers={**wheff.H, "Prefer": "return=representation"}, json=corpo, timeout=30), "gravar contatos")
+    if not r.json():
+        raise ValueError("pedido não está na fila ou é de outro @: nada gravado")
 
 
 def main():
@@ -210,9 +220,15 @@ def main():
     print(f"Tarefa {job['id']} — @{p.get('usuario')}")
     try:
         usuario = _usuario_ok(p.get("usuario"))
+        if pedido:   # confere ANTES de gastar a busca
+            r = requests.get(f"{wheff.URL}/rest/v1/parceira_contatos",
+                             params={"id": f"eq.{pedido}", "status": "eq.FILA", "usuario": f"eq.{usuario}", "select": "id"},
+                             headers=wheff.H, timeout=30)
+            if not re.fullmatch(r"[0-9a-fA-F-]{36}", str(pedido)) or r.status_code >= 300 or not r.json():
+                raise ValueError("pedido não está na fila ou é de outro @")
         res = buscar(usuario, [l for l in (p.get("links") or []) if isinstance(l, str)][:10])
         if pedido:
-            gravar(pedido, {"status": "PRONTO", "resultado": res, "erro": None})
+            gravar(pedido, usuario, {"status": "PRONTO", "resultado": res, "erro": None})
         wheff.terminar_job(ORG, job["id"])
         print(f"  OK: {len(res['perfis'])} perfis, {len(res['contatos'])} contatos, {len(res['paginas_lidas'])} páginas lidas")
         return 0
@@ -221,7 +237,10 @@ def main():
         definitivo = isinstance(e, ValueError)
         st = wheff.terminar_job(ORG, job["id"], erro=f"{type(e).__name__}: {e}", definitivo=definitivo)
         if pedido and st == "FAILED":
-            gravar(pedido, {"status": "ERRO", "erro": str(e)[:500]})
+            try:
+                gravar(pedido, str(p.get("usuario") or "").lstrip("@").split("/")[-1], {"status": "ERRO", "erro": str(e)[:500]})
+            except Exception:
+                pass   # pedido de outro @ ou fora da fila: não mexe nele
         return 1
 
 

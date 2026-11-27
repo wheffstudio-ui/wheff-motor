@@ -41,3 +41,27 @@ def test_usuario_invalido():
     with pytest.raises(ValueError):
         pc._usuario_ok("a b; rm")
     assert pc._usuario_ok("https://instagram.com/ana.lima/") == "ana.lima"
+
+
+def test_gravar_so_no_pedido_certo(monkeypatch):
+    import pytest
+    os.environ.setdefault("SUPABASE_URL", "http://x")
+    os.environ.setdefault("SUPABASE_SERVICE_KEY", "x")
+    chamadas = []
+
+    class R:
+        status_code = 200
+        text = "[]"
+        def json(self):
+            return []
+
+    def patch(url, params=None, **k):
+        chamadas.append(params)
+        return R()
+    monkeypatch.setattr(pc.requests, "patch", patch)
+    with pytest.raises(ValueError):
+        pc.gravar("nao-e-uuid", "ana", {})
+    assert chamadas == []
+    with pytest.raises(ValueError):   # 0 linhas: outro @ ou fora da fila
+        pc.gravar("123e4567-e89b-12d3-a456-426614174000", "ana", {"status": "PRONTO"})
+    assert chamadas[0] == {"id": "eq.123e4567-e89b-12d3-a456-426614174000", "status": "eq.FILA", "usuario": "eq.ana"}
