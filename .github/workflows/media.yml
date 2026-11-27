@@ -48,17 +48,17 @@ jobs:
           aprov=$(curl -sS -H "$h1" -H "$h2"             "$base/events?org_id=eq.wheff&event_type=eq.approval.granted&created_at=gte.$desde&select=id&limit=1"             | jq -r 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)
           if [ "$tipos" = "ERRO" ]; then
             # Não consegui perguntar: roda tudo, como antes (melhor gastar do que perder trabalho)
-            m=1; c=1; mf=1; p=1; d=1; a=1; t=1
+            m=1; c=1; mf=1; p=1; d=1; a=1; t=1; pc=1
             echo "::warning title=Porteiro::nao consegui consultar a fila — rodando todos os passos"
           else
             m=$(tem '^media\.ingest$'); c=$(tem '^community\.dna$'); mf=$(tem '^community\.manifesto$')
-            p=$(tem '^research\.'); d=$(tem '^dna\.analyze$'); t=$(tem '^time\.run$')
+            p=$(tem '^research\.'); d=$(tem '^dna\.analyze$'); t=$(tem '^time\.run$'); pc=$(tem '^parceira\.contatos$')
             [ "${aprov:-0}" -gt 0 ] && t=1
             a=$([ "${conversas:-0}" -gt 0 ] && echo 1 || echo 0)
           fi
-          algum=$(( m | c | mf | p | d | a | t ))
+          algum=$(( m | c | mf | p | d | a | t | pc ))
           { echo "media=$m"; echo "comunidade=$c"; echo "manifesto=$mf"; echo "pesquisa=$p"
-            echo "dna=$(( d | m ))"; echo "atendimento=$a"; echo "times=$t"; echo "algum=$algum"; } >> "$GITHUB_OUTPUT"
+            echo "dna=$(( d | m ))"; echo "atendimento=$a"; echo "times=$t"; echo "contatos=$pc"; echo "algum=$algum"; } >> "$GITHUB_OUTPUT"
           echo "midia=$m comunidade=$c manifesto=$mf pesquisa=$p dna=$d atendimento=$a"
           [ "$algum" = "0" ] && echo "nada para fazer — encerrando sem instalar nada"
           exit 0
@@ -160,6 +160,21 @@ jobs:
           REDDIT_USER_AGENT: wheff-pesquisa/1.0
           WHEFF_ORG: wheff
         run: python research_collect.py
+
+      # Redes e contatos de candidata do Match (worker/parceira_contatos.py):
+      # Maigret (MIT) + leitura das paginas publicas + phonenumbers. Gratuito,
+      # sem chave. Instala so quando tem pedido na fila.
+      - name: 4b. Redes e contatos da candidata
+        if: always() && steps.fila.outputs.contatos == '1'
+        continue-on-error: true
+        working-directory: worker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          WHEFF_ORG: wheff
+        run: |
+          pip install -q "maigret==0.6.7" "phonenumbers>=8.13"
+          python parceira_contatos.py
 
       # Classifica as conversas do direct e do WhatsApp, e transforma cada
       # uma em research_source com as frases exatas. E o que faz 100
