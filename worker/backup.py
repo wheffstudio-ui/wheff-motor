@@ -39,6 +39,55 @@ TABELAS = [
     "onboarding",
 ]
 
+# Cache que o motor refaz sozinho: não precisa de cópia.
+FORA = {"em_alta_cache"}
+
+
+def descobrir_tabelas():
+    """Todas as tabelas e views que a API expõe (o "mapa" do PostgREST), para
+    que tabela nova entre no backup sem ninguém lembrar de pôr na lista.
+    As da lista fixa vêm primeiro; se a descoberta falhar, fica só a lista."""
+    try:
+        r = requests.get(f"{URL}/rest/v1/", headers={**H, "Accept": "application/openapi+json"}, timeout=60)
+        r.raise_for_status()
+        achadas = sorted(p.strip("/") for p in r.json().get("paths", {})
+                         if p.count("/") == 1 and p != "/" and not p.startswith("/rpc"))
+    except Exception as e:
+        print(f"  (não deu para descobrir as tabelas: {e}; uso só a lista fixa)", file=sys.stderr)
+        achadas = []
+    return TABELAS + [t for t in achadas if t not in TABELAS and t not in FORA]
+
+
+def listar_storage():
+    """Nome, tamanho e data de cada arquivo de cada balde (sem baixar os
+    arquivos): dá para saber o que existia se algo sumir."""
+    saida = {}
+    r = requests.get(f"{URL}/storage/v1/bucket", headers=H, timeout=60)
+    r.raise_for_status()
+    for b in r.json():
+        arquivos, pilha = [], [""]
+        while pilha:
+            pasta = pilha.pop()
+            ini = 0
+            while True:
+                q = requests.post(f"{URL}/storage/v1/object/list/{b['id']}", headers={**H, "Content-Type": "application/json"},
+                                  json={"prefix": pasta, "limit": 1000, "offset": ini}, timeout=60)
+                q.raise_for_status()
+                lote = q.json()
+                for o in lote:
+                    cam = f"{pasta}/{o['name']}" if pasta else o["name"]
+                    if o.get("id") is None:
+                        pilha.append(cam)       # é pasta
+                    else:
+                        meta = o.get("metadata") or {}
+                        arquivos.append({"caminho": cam, "bytes": meta.get("size"), "tipo": meta.get("mimetype"),
+                                         "atualizado_em": o.get("updated_at")})
+                if len(lote) < 1000:
+                    break
+                ini += 1000
+        saida[b["id"]] = {"publico": b.get("public"), "arquivos": arquivos}
+    return saida
+
 
 def baixar_tabela(nome):
     """Lê a tabela inteira em páginas, para não estourar memória nem timeout."""
@@ -67,7 +116,8 @@ def main():
     total = 0
     falhou = False
 
-    for t in TABELAS:
+    tabelas = descobrir_tabelas()
+    for t in tabelas:
         try:
             linhas = baixar_tabela(t)
             caminho = os.path.join(DESTINO, f"{t}.json")
@@ -83,11 +133,21 @@ def main():
             resumo["tabelas"][t] = {"erro": str(e)[:300]}
             falhou = True
 
+    try:
+        st = listar_storage()
+        with open(os.path.join(DESTINO, "_storage.json"), "w", encoding="utf-8") as f:
+            json.dump(st, f, ensure_ascii=False, indent=1)
+        resumo["storage"] = {b: len(v["arquivos"]) for b, v in st.items()}
+        print("  storage: " + ", ".join(f"{b} {n}" for b, n in resumo["storage"].items()))
+    except Exception as e:
+        print(f"  storage: FALHOU — {e}", file=sys.stderr)
+        resumo["storage"] = {"erro": str(e)[:300]}
+
     resumo["total_linhas"] = total
     with open(os.path.join(DESTINO, "_resumo.json"), "w", encoding="utf-8") as f:
         json.dump(resumo, f, ensure_ascii=False, indent=1)
 
-    print(f"\n{total} linhas em {len(TABELAS)} tabelas.")
+    print(f"\n{total} linhas em {len(tabelas)} tabelas.")
     if falhou:
         print("Backup PARCIAL — alguma tabela não veio.", file=sys.stderr)
         return 1
